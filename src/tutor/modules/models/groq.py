@@ -87,10 +87,17 @@ class GroqModel:
             else:
                 raise e
 
+    def eval(self):
+        pass
+
+    def train(self):
+        pass
+
     def __call__(
             self,
             prompts: list, # (bs,)
-            images: Optional[list] = None # (bs, k) PIL images
+            images: Optional[list] = None, # (bs, k) PIL images
+            return_pred_answer: bool = False
     ) -> Tuple[list, list, list]:
         if images is None:
             images = [None]*len(prompts)

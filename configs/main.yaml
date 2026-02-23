@@ -1,2 +1,3 @@
 device: cuda
 visible_devices: "5,6,7"
+model_path: gemini-2.5-flash

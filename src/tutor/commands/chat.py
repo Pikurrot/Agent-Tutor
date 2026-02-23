@@ -8,12 +8,19 @@ from tutor.core.chat import send_message
 
 
 def add_chat_args(p: argparse.ArgumentParser):
+    # Config
     p.add_argument(
         "--config",
         type=Path,
         default=DEFAULT_CONFIG_PATH
     )
+    # Message
+    p.add_argument(
+        "--msg",
+        type=str,
+        required=True
+    )
 
 def run_chat(args: argparse.Namespace):
     cfg = load_config(args.config)
-    send_message(cfg)
+    send_message(cfg, args.msg)
