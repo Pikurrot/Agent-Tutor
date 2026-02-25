@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import pathlib
 import numpy as np
 from PIL import Image
 from google import genai
@@ -41,14 +42,15 @@ class GeminiModel:
     def generate(
         self,
         prompt: str,
-        images: Optional[list] = None
+        images: Optional[list] = None,
+        pdfs: Optional[list] = None
     ) -> str:
-        # print("Generating answer...")
         try:
             answer = gemini_generate_answer(
                 client=self.client,
                 prompt=prompt,
                 images=images,
+                pdfs=pdfs,
                 model=self.model_path,
                 thinking_budget=self.thinking_budget,
                 temperature=self.temperature,
@@ -61,10 +63,10 @@ class GeminiModel:
             self.api_keys_accumulated_errors[self.current_api_key_idx] += 1
             print("Trying next API key...")
             self.increment_api_key_idx()
-            if not any(self.api_keys_accumulated_errors < 2): # 2 errors per API key means that API key has reached its limit for the day
+            if not any(self.api_keys_accumulated_errors < 2):
                 raise Exception("All Gemini API keys have been tried.")
             self.client = self.create_client()
-            return self.generate(prompt, images)
+            return self.generate(prompt, images, pdfs)
 
     def eval(self):
         pass
@@ -76,11 +78,17 @@ class GeminiModel:
             self,
             prompts: list, # (bs,)
             images: Optional[list] = None, # (bs, k) PIL images
+            pdfs: Optional[list] = None, # (bs, k) file paths (str or pathlib.Path)
             return_pred_answer: bool = False
     ) -> Tuple[list, list, list]:
         if images is None:
             images = [None]*len(prompts)
-        pred_answers = [self.generate(prompt, image) for prompt, image in zip(prompts, images)]
+        if pdfs is None:
+            pdfs = [None]*len(prompts)
+        pred_answers = [
+            self.generate(prompt, imgs, pdf_list)
+            for prompt, imgs, pdf_list in zip(prompts, images, pdfs)
+        ]
         outputs = None
         pred_answers_conf = None
         return outputs, pred_answers, pred_answers_conf
@@ -90,6 +98,7 @@ def gemini_generate_answer(
     client: genai.Client,
     prompt: Optional[str] = None,
     images: Optional[list[Image.Image]] = None,
+    pdfs: Optional[list] = None,
     contents: Optional[list[Any]] = None,
     model: Optional[str] = None,
     thinking_budget: Optional[int] = None,
@@ -99,8 +108,9 @@ def gemini_generate_answer(
     """
     Generate an answer for a single prompt using Gemini.
     :param prompt: prompt
-    :param images: list of images
-    :param contents: list of content (text, images). Overrides prompt and images if provided.
+    :param images: list of PIL images
+    :param pdfs: list of PDF file paths (str or pathlib.Path)
+    :param contents: list of content parts. Overrides prompt, images, and pdfs if provided.
     :param model: model to use (gemini-2.0-flash, gemini-2.5-flash, ...)
     :param thinking_budget: budget for thinking (0 to disable, -1 for dynamic)
     :param temperature: temperature for sampling (0.0 to 2.0)
@@ -115,10 +125,18 @@ def gemini_generate_answer(
         temperature = 0.0
 
     if contents is None:
+        contents = []
+        if pdfs is not None:
+            for pdf_path in pdfs:
+                pdf_bytes = pathlib.Path(pdf_path).read_bytes()
+                contents.append(types.Part.from_bytes(
+                    data=pdf_bytes,
+                    mime_type="application/pdf"
+                ))
         if images is not None:
-            contents = [prompt] + images
-        else:
-            contents = [prompt]
+            contents.extend(images)
+        if prompt is not None:
+            contents.append(prompt)
 
     if model.startswith("gemini-2.5"):
         config=types.GenerateContentConfig(
