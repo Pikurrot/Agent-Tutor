@@ -8,7 +8,7 @@ from transformers import Qwen2_5_VLConfig
 from typing import Tuple, Any
 
 from tutor.modules.models.gemini import GeminiModel
-from tutor.modules.models.qwen import QwenVLForConditionalGeneration, Qwen
+from tutor.modules.models.qwen import QwenVLModel, Qwen
 from tutor.modules.models.groq import GroqModel
 
 
@@ -71,7 +71,7 @@ def get_model(model_path: str, cache_dir: str, config: dict) -> Tuple[Any, str]:
 				attn_implementation=None#"flash_attention_2" if IS_151 else None
 			)
 			qwen_config.update(config.get("qwen_config", {}))
-			model = QwenVLForConditionalGeneration(
+			model = QwenVLModel(
 				model_path,
 				cache_dir=cache_dir,
 				config=qwen_config,

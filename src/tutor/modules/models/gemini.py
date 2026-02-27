@@ -5,10 +5,50 @@ import numpy as np
 from PIL import Image
 from google import genai
 from google.genai import types
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, Generator
+
+from tutor.modules.models.base import BaseModel
 
 
-class GeminiModel:
+def _build_contents(
+    prompt: Optional[str] = None,
+    images: Optional[list[Image.Image]] = None,
+    pdfs: Optional[list] = None,
+) -> list:
+    contents = []
+    if pdfs is not None:
+        for pdf_path in pdfs:
+            pdf_bytes = pathlib.Path(pdf_path).read_bytes()
+            contents.append(types.Part.from_bytes(
+                data=pdf_bytes,
+                mime_type="application/pdf"
+            ))
+    if images is not None:
+        contents.extend(images)
+    if prompt is not None:
+        contents.append(prompt)
+    return contents
+
+
+def _build_config(
+    model: str,
+    thinking_budget: int = 0,
+    temperature: float = 0.0,
+    system_instruction: Optional[str] = None,
+) -> types.GenerateContentConfig:
+    if model.startswith("gemini-2.5"):
+        return types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+            system_instruction=system_instruction,
+            temperature=temperature
+        )
+    return types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        temperature=temperature
+    )
+
+
+class GeminiModel(BaseModel):
     def __init__(self, config: dict):
         self.config = config
         self.my_config = config.get("gemini_config", {})
@@ -19,7 +59,6 @@ class GeminiModel:
         self.temperature = self.my_config.get("temperature", 0.0)
         self.system_instruction = self.my_config.get("system_instruction", None)
 
-        # read list from .env
         self.api_keys = os.getenv("GEMINI_API_KEYS").split(",")
         self.current_api_key_idx = 0
         self.api_keys_accumulated_errors = np.zeros(len(self.api_keys))
@@ -30,7 +69,7 @@ class GeminiModel:
 
     def increment_api_key_idx(self):
         self.current_api_key_idx = (self.current_api_key_idx + 1) % len(self.api_keys)
-        return self.current_api_key_idx == 0 # True if all api keys have been tried
+        return self.current_api_key_idx == 0
 
     def create_client(self):
         try:
@@ -38,47 +77,66 @@ class GeminiModel:
         except Exception as e:
             print(f"Warning: no Gemini client initialized: {e}")
             return None
-    
+
+    def _rotate_key_on_error(self, e: Exception):
+        print(f"Error: {e}")
+        self.api_keys_accumulated_errors[self.current_api_key_idx] += 1
+        print("Trying next API key...")
+        self.increment_api_key_idx()
+        if not any(self.api_keys_accumulated_errors < 2):
+            raise Exception("All Gemini API keys have been tried.")
+        self.client = self.create_client()
+
     def generate(
         self,
         prompt: str,
         images: Optional[list] = None,
-        pdfs: Optional[list] = None
+        pdfs: Optional[list] = None,
+        **kwargs,
     ) -> str:
         try:
-            answer = gemini_generate_answer(
-                client=self.client,
-                prompt=prompt,
-                images=images,
-                pdfs=pdfs,
-                model=self.model_path,
-                thinking_budget=self.thinking_budget,
-                temperature=self.temperature,
-                system_instruction=self.system_instruction
+            contents = _build_contents(prompt, images, pdfs)
+            config = _build_config(
+                self.model_path, self.thinking_budget,
+                self.temperature, self.system_instruction,
+            )
+            response = self.client.models.generate_content(
+                model=self.model_path, contents=contents, config=config,
             )
             self.api_keys_accumulated_errors[self.current_api_key_idx] = 0
-            return answer
+            return response.text
         except Exception as e:
-            print(f"Error: {e}")
-            self.api_keys_accumulated_errors[self.current_api_key_idx] += 1
-            print("Trying next API key...")
-            self.increment_api_key_idx()
-            if not any(self.api_keys_accumulated_errors < 2):
-                raise Exception("All Gemini API keys have been tried.")
-            self.client = self.create_client()
+            self._rotate_key_on_error(e)
             return self.generate(prompt, images, pdfs)
 
-    def eval(self):
-        pass
-
-    def train(self):
-        pass
+    def stream_generate(
+        self,
+        prompt: str,
+        images: Optional[list] = None,
+        pdfs: Optional[list] = None,
+        **kwargs,
+    ) -> Generator[str, None, None]:
+        try:
+            contents = _build_contents(prompt, images, pdfs)
+            config = _build_config(
+                self.model_path, self.thinking_budget,
+                self.temperature, self.system_instruction,
+            )
+            for chunk in self.client.models.generate_content_stream(
+                model=self.model_path, contents=contents, config=config,
+            ):
+                if chunk.text:
+                    yield chunk.text
+            self.api_keys_accumulated_errors[self.current_api_key_idx] = 0
+        except Exception as e:
+            self._rotate_key_on_error(e)
+            yield from self.stream_generate(prompt, images, pdfs)
 
     def __call__(
             self,
-            prompts: list, # (bs,)
-            images: Optional[list] = None, # (bs, k) PIL images
-            pdfs: Optional[list] = None, # (bs, k) file paths (str or pathlib.Path)
+            prompts: list,
+            images: Optional[list] = None,
+            pdfs: Optional[list] = None,
             return_pred_answer: bool = False
     ) -> Tuple[list, list, list]:
         if images is None:
@@ -125,36 +183,15 @@ def gemini_generate_answer(
         temperature = 0.0
 
     if contents is None:
-        contents = []
-        if pdfs is not None:
-            for pdf_path in pdfs:
-                pdf_bytes = pathlib.Path(pdf_path).read_bytes()
-                contents.append(types.Part.from_bytes(
-                    data=pdf_bytes,
-                    mime_type="application/pdf"
-                ))
-        if images is not None:
-            contents.extend(images)
-        if prompt is not None:
-            contents.append(prompt)
+        contents = _build_contents(prompt, images, pdfs)
 
-    if model.startswith("gemini-2.5"):
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
-            system_instruction=system_instruction,
-            temperature=temperature
-        )
-    else:
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=temperature
-        )
+    config = _build_config(model, thinking_budget, temperature, system_instruction)
     response = client.models.generate_content(
         model=model,
         contents=contents,
         config=config
     )
-    
+
     return response.text
 
 # TODO: for better batch generation, see: https://developers.googleblog.com/en/scale-your-ai-workloads-batch-mode-gemini-api/

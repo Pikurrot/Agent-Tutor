@@ -1,12 +1,12 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Generator
 
 from tutor.utils.misc import get_model
 from tutor.utils.paths import MODELS_CACHE_DIR
 
 
-def send_message(
+def cli_send_message(
     cfg: dict,
     msg: str,
     pdf_path: Optional[Path] = None
@@ -17,9 +17,19 @@ def send_message(
     prompts = [msg]
     pdfs = [[pdf_path]] if pdf_path is not None else None
     print(f"Generating answer with {model_type}...")
-    _, pred_answers, _ = model(prompts, pdfs=pdfs, return_pred_answer=True)
+    if model_type == "gemini":
+        _, pred_answers, _ = model(prompts, pdfs=pdfs, return_pred_answer=True)
+    else:
+        if pdf_path is not None:
+            print(f"PFF support not enabled for {model_type}")
+        _, pred_answers, _ = model(prompts, return_pred_answer=True)
     print(f"Answer: {pred_answers[0]}")
 
 
-def free_chat(cfg: dict):
-    pass
+def generate_response(model, msg: str) -> str:
+    _, pred_answers, _ = model([msg], return_pred_answer=True)
+    return pred_answers[0]
+
+
+def stream_generate_response(model, msg: str) -> Generator[str, None, None]:
+    yield from model.stream_generate(msg)

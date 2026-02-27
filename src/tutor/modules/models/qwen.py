@@ -1,24 +1,27 @@
 from __future__ import annotations
+import threading
 import torch
 from transformers import (
 	Qwen2_5_VLForConditionalGeneration,
 	Qwen2_5_VLConfig,
 	AutoProcessor,
 	AutoModelForCausalLM,
-	AutoTokenizer
+	AutoTokenizer,
+	TextIteratorStreamer,
 )
 from qwen_vl_utils import process_vision_info
 from PIL import Image
 from peft import PeftModel
-from typing import Tuple, Optional, Any
+from typing import Tuple, Optional, Any, Generator
 
 from tutor.utils.paths import MODELS_CACHE_DIR
 from tutor.modules.models.utils import get_generative_confidence
+from tutor.modules.models.base import BaseModel
 
 
-class QwenVLForConditionalGeneration(torch.nn.Module):
+class QwenVLModel(torch.nn.Module, BaseModel):
 	def __init__(self, model_path: str, cache_dir: str, config: Qwen2_5_VLConfig):
-		super(QwenVLForConditionalGeneration, self).__init__()
+		super(QwenVLModel, self).__init__()
 		self.lora_weights = config.lora_weights
 		self.processor = AutoProcessor.from_pretrained(model_path)
 		device_map = getattr(config, "device_map", "auto")
@@ -38,7 +41,6 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 				self.model,
 				self.lora_weights,
 				torch_dtype=config.torch_dtype,
-				# device_map=config.device,
 			)
 			print("LoRA weights loaded successfully")
 		if getattr(config, "gradient_checkpointing", False):
@@ -54,8 +56,6 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 		self.image_max_size = config.image_max_size
 
 	def to(self, device):
-		# self.model.to(device)
-		# self.device = device
 		pass
 
 	def eval(self):
@@ -65,6 +65,26 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 	def train(self):
 		self.model.train()
 		self.train_mode = True
+
+	def generate(self, prompt: str, images: Optional[list] = None, **kwargs) -> str:
+		images_list = [images] if images else None
+		inputs, _, _ = self.prepare_inputs_for_vqa([prompt], images_list)
+		pred_answers, _ = self.get_answer_from_model_output(inputs)
+		return pred_answers[0]
+
+	def stream_generate(self, prompt: str, images: Optional[list] = None, **kwargs) -> Generator[str, None, None]:
+		images_list = [images] if images else None
+		inputs, _, _ = self.prepare_inputs_for_vqa([prompt], images_list)
+		streamer = TextIteratorStreamer(
+			self.processor.tokenizer, skip_special_tokens=True, skip_prompt=True,
+		)
+		gen_kwargs = {**inputs, "max_new_tokens": self.max_new_tokens, "streamer": streamer}
+		thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+		thread.start()
+		for text in streamer:
+			if text:
+				yield text
+		thread.join()
 
 	def prepare_inputs_for_vqa(
 			self,
@@ -92,14 +112,12 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 			for batch_imgs in images:
 				batch_resized = []
 				for img in batch_imgs:
-					# More aggressive resizing for memory efficiency
 					max_size = self.image_max_size
 					if img.width < 28 or img.height < 28:
 						new_width = max(img.width, 28)
 						new_height = max(img.height, 28)
 						batch_resized.append(img.resize((new_width, new_height)))
 					elif img.width > max_size or img.height > max_size:
-						# Maintain aspect ratio
 						aspect = img.width / img.height
 						if aspect > 1:
 							new_width = max_size
@@ -112,7 +130,6 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 						batch_resized.append(img)
 				resized_images.append(batch_resized)
 
-		# Construct messages for each sample in the batch
 		messages = []
 		for i in range(len(prompts)):
 			message = {
@@ -124,7 +141,6 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 					}
 				]
 			}
-			# Add images for this sample
 			if resized_images:
 				for img in resized_images[i]:
 					message["content"].append({
@@ -139,7 +155,6 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 		]
 		image_inputs, _ = process_vision_info(messages)
 
-		# Process the input
 		inputs = self.processor(
 			text=prompts,
 			images=image_inputs,
@@ -147,17 +162,12 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 			padding=True,
 			return_tensors="pt",
 			padding_side="left",
-			# truncation=True,
-			# max_length=self.max_seq_lenght,
 		)
 		
-		# Move to device
 		inputs = {k: v.to(self.device) for k, v in inputs.items()}
 		
-		# If answers are provided, prepare labels for training
 		labels = None
 		if answers:
-			# Create messages with answers included for proper training
 			messages_with_answers = []
 			for i in range(len(prompts)):
 				msg = [
@@ -171,27 +181,23 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 						]
 					}
 				]
-				# Add images for this sample
 				for img in resized_images[i]:
 					msg[0]["content"].append({
 						"type": "image",
 						"image": img,
 					})
-				# Add assistant response
 				msg.append({
 					"role": "assistant",
 					"content": answers[i]
 				})
 				messages_with_answers.append(msg)
 			
-			# Apply chat template to get full conversation (without generation prompt)
 			combined_prompts = [
 				self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=False)
 				for msg in messages_with_answers
 			]
 			image_inputs_combined, _ = process_vision_info(messages_with_answers)
 			
-			# Process the combined inputs WITH images (critical for vision-language model)
 			combined_inputs = self.processor(
 				text=combined_prompts,
 				images=image_inputs_combined,
@@ -201,19 +207,12 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 				padding_side="left",
 			)
 			
-			# Move to device
 			combined_inputs = {k: v.to(self.device) for k, v in combined_inputs.items()}
 			
-			# Create labels - clone input_ids and mask the prompt portion
 			labels = combined_inputs["input_ids"].clone()
-			
-			# Get the length of prompt-only inputs to know where the answer starts
-			# This is robust and doesn't rely on searching for specific text like "assistant:"
 			prompt_lengths = [len(input_ids) for input_ids in inputs["input_ids"]]
 			
-			# Mask everything before the answer with -100 (so loss is only computed on answer tokens)
 			for i in range(len(labels)):
-				# Mask all tokens up to where the answer begins
 				labels[i, :prompt_lengths[i]] = -100
 			
 			return inputs, combined_inputs, labels
@@ -222,9 +221,9 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 
 	def forward(
 			self,
-			prompts: list,      # (bs,) context strings
-			images: Optional[list] = None,       # (bs, k) PIL images
-			answers: Optional[list] = None,  # (bs,) Optional ground truth answers
+			prompts: list,
+			images: Optional[list] = None,
+			answers: Optional[list] = None,
 			return_pred_answer: bool = False
 	):
 		"""
@@ -241,14 +240,11 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 			pred_answers: Predicted answers (if return_pred_answer=True or in inference mode)
 			pred_answers_conf: Confidence scores for predictions
 		"""
-		# Use answers only in training mode
 		answers_to_use = answers if self.train_mode else None
 		
-		# Prepare inputs using the VQA preparation function
 		inputs, combined_inputs, labels = self.prepare_inputs_for_vqa(prompts, images, answers_to_use)
 
 		if labels is not None:
-			# Training mode with labels
 			outputs = self.model(
 				**combined_inputs,
 				labels=labels
@@ -259,7 +255,6 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 			else:
 				pred_answers, pred_answers_conf = None, None
 		else:
-			# Inference mode
 			outputs = None
 			pred_answers, pred_answers_conf = self.get_answer_from_model_output(inputs)
 
@@ -276,7 +271,6 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 				return_dict_in_generate=True,
 				output_attentions=False,
 				max_new_tokens=self.max_new_tokens,
-				# early_stopping=True
 			)
 
 		generated_ids_trimmed = [
@@ -289,13 +283,12 @@ class QwenVLForConditionalGeneration(torch.nn.Module):
 			clean_up_tokenization_spaces=False
 		)
 
-		# Extract confidence scores
 		pred_answers_conf = get_generative_confidence(output)
 
 		return pred_answers, pred_answers_conf
 
 
-class Qwen(torch.nn.Module):
+class Qwen(torch.nn.Module, BaseModel):
 	def __init__(self, model_path: str, cache_dir: str, config: Any):
 		super(Qwen, self).__init__()
 		self.lora_weights = getattr(config, "lora_weights", None)
@@ -338,6 +331,24 @@ class Qwen(torch.nn.Module):
 	def train(self):
 		self.model.train()
 		self.train_mode = True
+
+	def generate(self, prompt: str, **kwargs) -> str:
+		inputs, _, _ = self.prepare_inputs([prompt])
+		pred_answers, _ = self.get_answer_from_model_output(inputs)
+		return pred_answers[0]
+
+	def stream_generate(self, prompt: str, **kwargs) -> Generator[str, None, None]:
+		inputs, _, _ = self.prepare_inputs([prompt])
+		streamer = TextIteratorStreamer(
+			self.tokenizer, skip_special_tokens=True, skip_prompt=True,
+		)
+		gen_kwargs = {**inputs, "max_new_tokens": self.max_new_tokens, "streamer": streamer}
+		thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+		thread.start()
+		for text in streamer:
+			if text:
+				yield text
+		thread.join()
 
 	def prepare_inputs(self, prompts: list, answers: Optional[list] = None) -> Tuple[dict, Optional[dict], Optional[torch.Tensor]]:
 		if isinstance(prompts, str):

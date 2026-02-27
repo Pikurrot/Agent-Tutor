@@ -2,9 +2,12 @@ from __future__ import annotations
 import os
 import numpy as np
 from groq import Groq
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Generator
 
-class GroqModel:
+from tutor.modules.models.base import BaseModel
+
+
+class GroqModel(BaseModel):
     def __init__(self, config: dict):
         self.config = config
         self.my_config = config.get("groq_config", {})
@@ -21,7 +24,6 @@ class GroqModel:
         self.reasoning_effort = self.my_config.get("reasoning_effort", "medium")
         self.system_instruction = self.my_config.get("system_instruction", None)
 
-        # read list from .env
         api_keys_str = os.getenv("GROQ_API_KEYS")
         if not api_keys_str:
             print("Warning: GROQ_API_KEYS environment variable not set. Groq client will not be initialized.")
@@ -50,58 +52,72 @@ class GroqModel:
         except Exception as e:
             print(f"Warning: no Groq client initialized: {e}")
             return None
-    
-    def generate(
-        self,
-        prompt: str,
-        images: Optional[list] = None
-    ) -> str:
-        if images:
-            # print("Warning: Groq model currently doesn't support images in this implementation. Ignoring images.")
-            pass
-        
-        # print(f"Generating answer with {self.model_path}...")
+
+    def _build_messages(self, prompt: str) -> list[dict]:
+        messages = []
+        if self.system_instruction:
+            messages.append({"role": "system", "content": self.system_instruction})
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    def _create_completion(self, prompt: str, stream: bool = False):
+        messages = self._build_messages(prompt)
+        return self.client.chat.completions.create(
+            model=self.model_path,
+            messages=messages,
+            temperature=self.temperature,
+            max_completion_tokens=self.max_completion_tokens,
+            top_p=self.top_p,
+            reasoning_effort=self.reasoning_effort,
+            stream=stream,
+            stop=None
+        )
+
+    def _rotate_key_on_error(self, e: Exception):
+        print(f"Error: {e}")
+        if self.api_keys:
+            self.api_keys_accumulated_errors[self.current_api_key_idx] += 1
+            print("Trying next API key...")
+            self.increment_api_key_idx()
+            if not any(self.api_keys_accumulated_errors < 2):
+                raise Exception("All Groq API keys have been tried or failed.")
+            self.client = self.create_client()
+        else:
+            raise e
+
+    def generate(self, prompt: str, **kwargs) -> str:
         try:
-            answer = groq_generate_answer(
-                client=self.client,
-                prompt=prompt,
-                model=self.model_path,
-                temperature=self.temperature,
-                max_completion_tokens=self.max_completion_tokens,
-                top_p=self.top_p,
-                reasoning_effort=self.reasoning_effort,
-                system_instruction=self.system_instruction
-            )
+            completion = self._create_completion(prompt, stream=True)
+            full_response = ""
+            for chunk in completion:
+                full_response += (chunk.choices[0].delta.content or "")
             self.api_keys_accumulated_errors[self.current_api_key_idx] = 0
-            return answer
+            return full_response
         except Exception as e:
-            print(f"Error: {e}")
-            if self.api_keys:
-                self.api_keys_accumulated_errors[self.current_api_key_idx] += 1
-                print("Trying next API key...")
-                self.increment_api_key_idx()
-                if not any(self.api_keys_accumulated_errors < 2):
-                    raise Exception("All Groq API keys have been tried or failed.")
-                self.client = self.create_client()
-                return self.generate(prompt, images)
-            else:
-                raise e
+            self._rotate_key_on_error(e)
+            return self.generate(prompt)
 
-    def eval(self):
-        pass
-
-    def train(self):
-        pass
+    def stream_generate(self, prompt: str, **kwargs) -> Generator[str, None, None]:
+        try:
+            completion = self._create_completion(prompt, stream=True)
+            for chunk in completion:
+                content = chunk.choices[0].delta.content or ""
+                if content:
+                    yield content
+            self.api_keys_accumulated_errors[self.current_api_key_idx] = 0
+        except Exception as e:
+            self._rotate_key_on_error(e)
+            yield from self.stream_generate(prompt)
 
     def __call__(
             self,
-            prompts: list, # (bs,)
-            images: Optional[list] = None, # (bs, k) PIL images
+            prompts: list,
+            images: Optional[list] = None,
             return_pred_answer: bool = False
     ) -> Tuple[list, list, list]:
         if images is None:
             images = [None]*len(prompts)
-        pred_answers = [self.generate(prompt, image) for prompt, image in zip(prompts, images)]
+        pred_answers = [self.generate(prompt) for prompt in prompts]
         outputs = None
         pred_answers_conf = None
         return outputs, pred_answers, pred_answers_conf

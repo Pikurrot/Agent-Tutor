@@ -4,7 +4,7 @@ from pathlib import Path
 
 from tutor.utils.config import load_config
 from tutor.utils.paths import DEFAULT_CONFIG_PATH
-from tutor.core.chat import send_message
+from tutor.core.chat import cli_send_message
 
 
 def add_chat_args(p: argparse.ArgumentParser):
@@ -32,4 +32,4 @@ def add_chat_args(p: argparse.ArgumentParser):
 
 def run_chat(args: argparse.Namespace):
     cfg = load_config(args.config)
-    send_message(cfg, args.msg, args.pdf_path)
+    cli_send_message(cfg, args.msg, args.pdf_path)
