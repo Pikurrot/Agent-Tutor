@@ -1,2 +1,22 @@
 processor_config:
-  
+    transcription_model: "large-v3"
+    pixel_diff_resize_width: 640
+    pixel_diff_save: True
+    
+    slide_transition_threshold_multiplier: 1.0
+    slide_transition_custom_threshold: null
+    slide_transition_distance_sec: 1.5 # minimum distance between slide transitions
+    slide_transition_save: True
+
+    extract_frames_from_video_convert_to_rgb: False
+
+    matching_color_tolerance: 30.0
+    matching_save: True
+    
+    timelines_save: True
+
+    transcription_save: True
+
+    merge_asb_thresh: 100.0
+    merge_rel_thresh: 0.6
+    merge_save: True

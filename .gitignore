@@ -209,3 +209,5 @@ __marimo__/
 # Custom
 uv.lock
 commands_log.txt
+temp.ipynb
+screenlog.0
