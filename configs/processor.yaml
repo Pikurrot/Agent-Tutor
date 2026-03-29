@@ -16,6 +16,13 @@ processor_config:
     timelines_save: True
 
     transcription_save: True
+    transcription_config:
+        language: "en"
+        min_silence_duration_ms: 500
+        speech_pad_ms: 400
+        condition_on_previous_text: False
+        no_speech_threshold: 0.6
+        log_prob_threshold: -1.0
 
     merge_asb_thresh: 100.0
     merge_rel_thresh: 0.6

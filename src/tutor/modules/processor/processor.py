@@ -172,19 +172,24 @@ class Processor:
         sift: cv2.SIFT,
         flann: cv2.FlannBasedMatcher,
         list_b_features: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
-    ) -> int:
+    ) -> tuple[int, int]:
         color_tolerance = self.my_config["matching_color_tolerance"]
+        # Add these to your config, or rely on these defaults
+        rel_threshold = self.my_config.get("matching_rel_threshold", 0.6) 
+        gap_tolerance = self.my_config.get("matching_gap_tolerance", 2)
+        
         gray_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY) if len(img_a.shape) == 3 else img_a
         kp_a, des_a = sift.detectAndCompute(gray_a, None)
         
         if des_a is None or len(kp_a) < 4:
-            return None
-
-        best_score = -1
-        best_b_idx = -1
+            return None, None
 
         # Extract coordinates once
         pts_a_all = np.array([kp.pt for kp in kp_a], dtype=np.float32)
+
+        # Store scores for ALL video frames instead of just tracking the single best
+        num_b = len(list_b_features)
+        scores = np.zeros(num_b, dtype=np.int32)
 
         for j, (kp_b, des_b, img_b, pts_b_all) in enumerate(list_b_features):
             if des_b is None or len(kp_b) < 4:
@@ -238,13 +243,38 @@ class Processor:
             colors_b = img_b[final_dst[:, 1], final_dst[:, 0]].astype(np.int32)
             
             color_dists = np.linalg.norm(colors_a - colors_b, axis=1)
-            valid_color_matches = np.sum(color_dists <= color_tolerance)
+            
+            # Save the score to the array
+            scores[j] = np.sum(color_dists <= color_tolerance)
 
-            if valid_color_matches > best_score:
-                best_score = valid_color_matches
-                best_b_idx = j
-                
-        return best_b_idx, best_score
+        # Sequence detecting logic
+        max_score = np.max(scores)
+        
+        # If no valid matches were found at all
+        if max_score == 0:
+            return None, None
+            
+        max_idx = int(np.argmax(scores))
+        
+        # Any frame scoring at least this percentage of the max score belongs to the slide
+        threshold = max_score * rel_threshold
+        
+        start_idx = max_idx
+        current_gap = 0
+        
+        # Walk backward from the peak to find the chronological beginning of the slide sequence
+        for i in range(max_idx - 1, -1, -1):
+            if scores[i] >= threshold:
+                start_idx = i
+                current_gap = 0 # Reset gap tolerance because we found a valid frame
+            else:
+                current_gap += 1
+                # If we hit too many bad frames in a row, we assume the slide group has ended
+                if current_gap > gap_tolerance:
+                    break
+                    
+        return start_idx, max_score
+
 
     def _find_most_similar_images(
         self,
@@ -289,8 +319,14 @@ class Processor:
             # Retrieve results in order
             for future in futures:
                 best_b_idx, best_score = future.result()
-                best_matches_indices.append(best_b_idx)
-                scores.append(int(best_score))
+                
+                # Handle cases where no SIFT features were found safely
+                if best_b_idx is None:
+                    best_matches_indices.append(None)
+                    scores.append(0)
+                else:
+                    best_matches_indices.append(int(best_b_idx))
+                    scores.append(int(best_score))
 
         if self.my_config["matching_save"]:
             print("Saving most similar images to ", save_path)
@@ -328,14 +364,14 @@ class Processor:
         for pdf_idx, vid_idx in pdf_to_segment.items():
             segment_to_pdf_raw[vid_idx].append(pdf_idx)
             
-        segment_to_pdf = {i: v for i, v in enumerate(segment_to_pdf_raw.values())}
+        segment_to_pdf = {i: v for i, v in enumerate(sorted(segment_to_pdf_raw.values()))}
 
         if len(unique_best_matches_indices) > 0:
             transition_frames_sel = sorted(np.array(slide_transition_frames)[unique_best_matches_indices].tolist())
         else:
             transition_frames_sel = []
             
-        segment_boundaries = [0] + transition_frames_sel + [total_frames]
+        segment_boundaries = [0] + transition_frames_sel[1:] + [total_frames]
         n_segments = min(len(transition_frames_sel), len(segment_boundaries) - 1)
         
         video_timeline = []     
@@ -382,7 +418,26 @@ class Processor:
                 return data["segments"]
 
         segments = []
-        segments_generator, info = self.transcription_model.transcribe(video_path)
+        
+        transcription_config = self.my_config["transcription_config"]
+
+        segments_generator, info = self.transcription_model.transcribe(
+            video_path,
+            language=transcription_config["language"],
+            
+            # VAD
+            vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=transcription_config["min_silence_duration_ms"],
+                speech_pad_ms=transcription_config["speech_pad_ms"],
+            ),
+            
+            # Anti-Hallucination
+            condition_on_previous_text=transcription_config["condition_on_previous_text"],
+            no_speech_threshold=transcription_config["no_speech_threshold"],
+            log_prob_threshold=transcription_config["log_prob_threshold"],
+        )
+        
         for segment in tqdm(segments_generator, desc="Transcribing video"):
             segments.append([segment.start, segment.end, segment.text])
         
@@ -550,8 +605,8 @@ class Processor:
         pdf_images = convert_from_path(pdf_path)
         pdf_images = [np.array(img) for img in pdf_images]
         
-        all_matches_indices = []
-        all_scores = []
+        all_matches_indices = [] # says for each pdf slide, which video frame it is most similar to
+        all_scores = [] # says how similar the video frame is to the pdf slide
         video_names = []
         video_data = {}
         
