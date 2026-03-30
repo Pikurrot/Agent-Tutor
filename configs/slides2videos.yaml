@@ -1,0 +1,44 @@
+slides2videos:
+  machine-learning:
+    "Lecture 1 - Introduction.pdf": [
+      "ML 2023-24 Week 1 (a) [DxKUPcJfzBA].mp4",
+      "ML 2023-24 Week 1 (b) [1I5oM4kQzbY].mp4",
+      "ML 2023-24 Week 1 (c) [z1KxE9AVNCQ].mp4"
+    ]
+    "Lecture 2 - Multiple regression, normalization, polynomial regression.pdf": [
+      "ML 2023-24 Week 2 (a) [cHuGp2HoQtI].mp4",
+      "ML 2023-24 Week 2 (b) [EZu_oMxE3tc].mp4"
+    ]
+    "Lecture 3 - Logistic regression, multi-class classification.pdf": [
+      "ML 2023-24 Week 3 (b) [HpUKzu0g890].mp4"
+    ]
+    "Lecture 4 - Regularization, Bias-Variance Trade Off.pdf": [
+      "ML 2023-24 Week 4 (a) [iPzvxrIyX6o].mp4",
+      "ML 2023-24 Week 4 (b) [c8oinUGxuXY].mp4"
+    ]
+    "Lecture 5 - Probabilities, Bayesian Inference, Naive Bayes.pdf": [
+      "Machine Learning Fundamentals - 10⧸10⧸2023 (1st half) [4qvpABoRKgE].mp4",
+      "Machine Learning Fundamentals - 10⧸10⧸2023 (2nd half) [U_wIl9NC9eY].mp4"
+    ]
+    "Lecture 6 - Parameter Estimation.pdf": [
+      "ML 2023-24 Week 6 (a) [JiAfnhovGko].mp4",
+      "ML 2023-24 Week 6 (b) [wx3nJTBeXkM].mp4"
+    ]
+    "Lecture 7 - Genetic Algorithms, CBR.pdf": [
+      "Machine Learning Fundamentals - 25⧸10⧸2023 (1st half) [h_Iw83Nv-jA].mp4",
+      "Machine Learning Fundamentals - 25⧸10⧸2023 (2nd half) [w8oAko0FYhE].mp4"
+    ]
+    "Lecture 8 - Decision Trees, Ensemble Learning, Random Forests.pdf": [
+      "Machine Learning Fundamentals - 08⧸11⧸2023 (1st half) [1GP4ZyrpVZA].mp4",
+      "Machine Learning Fundamentals - 08⧸11⧸2023 (2nd half) [gjZRMmLkQoA].mp4"
+    ]
+    "Lecture 9 - SMVs.pdf": [
+      "ML 2023-24 Week 9 (a) [fs3LdzObTN8].mp4",
+      "ML 2023-24 Week 9 (b) [fjjM9kgQh4w].mp4",
+      "ML 2023-24 Week 9 (c) [DjgnEkUhi3E].mp4"
+    ]
+    "Lecture 10 - Density Estimation, Parzen, Expectation Maximisation.pdf": [
+      "ML 2023-24 Week 10 (a) [luNQVw0Uvd4].mp4",
+      "ML 2023-24 Week 10 (b) [AisbCmzwjGI].mp4",
+      "ML 2023-24 Week 10 (c) [w5Vt_4xJfYA].mp4"
+    ]

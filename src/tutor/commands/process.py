@@ -4,7 +4,7 @@ from pathlib import Path
 
 from tutor.utils.config import load_config
 from tutor.utils.paths import DEFAULT_CONFIG_PATH
-from tutor.core.process import process_videos
+from tutor.core.process import process_videos, process_subject_directory
 
 
 def add_process_args(p: argparse.ArgumentParser):
@@ -43,13 +43,15 @@ def run_process(args: argparse.Namespace):
     path = args.path
     pdf_path = args.pdf_path
     video_paths = args.video_paths
-    if path is not None and path.is_file():
+    if path is not None:
         if str(path).endswith(".mp4"):
             if pdf_path is None:
                 raise ValueError("PDF path is required if the provided path is a video file.")
             process_videos(cfg, [str(path)], str(pdf_path))
+        elif path.is_dir():
+            process_subject_directory(cfg, str(path))
         else:
-            raise ValueError("Invalid file type.")
+            raise ValueError("Invalid path. Please provide a valid file or directory path.")
     elif video_paths is not None and len(video_paths) > 0:
         if pdf_path is None:
             raise ValueError("PDF path is required if the provided video paths are provided.")
