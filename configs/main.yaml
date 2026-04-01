@@ -1,4 +1,4 @@
 device: cuda
-visible_devices: "4"
+visible_devices: "0"
 model_path: Qwen/Qwen3-8B
 # model_path: gemini-2.5-flash

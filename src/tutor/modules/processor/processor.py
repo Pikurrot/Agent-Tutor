@@ -590,10 +590,10 @@ class Processor:
         subject_dir = Path(video_paths[0]).parent.parent.parent
         intermediate_dir = subject_dir / "intermediate"
         intermediate_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = subject_dir / "processed"
+        output_dir = subject_dir / "processed" / "transcriptions"
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        output_path = output_dir / f"{pdf_name}_all_slides_transcriptions.json"
+
+        output_path = output_dir / f"{pdf_name}.json"
 
         if output_path.exists():
             print("Loading aggregated segments for slides from ", output_path)
