@@ -14,6 +14,7 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 from tutor.commands.chat import add_chat_args, run_chat  # noqa: E402
 from tutor.commands.app import add_app_args, run_app  # noqa: E402
+from tutor.commands.serve import add_serve_args, run_serve  # noqa: E402
 from tutor.utils.misc import seed_everything # noqa: E402
 from tutor.commands.process import add_process_args, run_process # noqa: E402
 
@@ -33,6 +34,9 @@ def build_parser():
 
     p_app = sub.add_parser("app", help="Launch Streamlit chat GUI")
     add_app_args(p_app)
+
+    p_serve = sub.add_parser("serve", help="Run inference HTTP API (model + RAG in this process)")
+    add_serve_args(p_serve)
 
     return p
 
@@ -54,6 +58,8 @@ def main():
         run_process(args)
     elif args.command == "app":
         run_app(args)
+    elif args.command == "serve":
+        run_serve(args)
     else:
         parser.print_help()
         sys.exit(1)

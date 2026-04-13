@@ -7,9 +7,11 @@ dependencies = [
     "dotenv>=0.9.9",
     "faster-whisper>=1.2.1",
     "fitz>=0.0.1.dev2",
+    "fastapi>=0.115.0",
     "frontend>=0.0.3",
     "google-genai>=1.64.0",
     "groq>=1.0.0",
+    "httpx>=0.28.0",
     "ipykernel>=7.2.0",
     "langchain>=1.2.15",
     "langchain-classic>=1.0.3",
@@ -26,6 +28,7 @@ dependencies = [
     "torch>=2.10.0",
     "torchvision>=0.25.0",
     "transformers>=4.40.0,<5.0.0",
+    "uvicorn[standard]>=0.32.0",
 ]
 requires-python = ">=3.10"
 

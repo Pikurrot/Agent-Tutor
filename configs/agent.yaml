@@ -1,0 +1,3 @@
+agent_config:
+  mock_stream_delay_seconds: 0.05
+  mock_stream_chunk_chars: 5
