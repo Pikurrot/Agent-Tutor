@@ -18,6 +18,7 @@ from tutor.utils.misc import get_model  # noqa: E402
 from tutor.utils.paths import MODELS_CACHE_DIR  # noqa: E402
 from tutor.core.chat import stream_generate_response  # noqa: E402
 from tutor.modules.retrieval.RAG import RAGModule  # noqa: E402
+from tutor.modules.agent.agent import build_rag_agent, StreamlitAgentCallbackHandler  # noqa: E402
 
 COLS_PER_SLIDE_ROW = 4
 
@@ -63,9 +64,9 @@ with st.sidebar:
     model_path = MODEL_OPTIONS[selected_model]
     answer_mode = st.selectbox(
         "Answer mode",
-        ["Basic", "RAG"],
+        ["Basic", "RAG", "Agent"],
         index=0,
-        help="Basic: your message is sent to the model as-is. RAG: lecture context is retrieved and prepended first.",
+        help="Basic: your message is sent to the model as-is. RAG: lecture context is retrieved and prepended first. Agent: use a ReAct agent to answer the question.",
     )
 
     if st.button("Clear Chat"):
@@ -105,12 +106,32 @@ if prompt := st.chat_input("Type your message..."):
                 status.update(label="Retrieval complete", state="complete", expanded=False)
             response = st.write_stream(stream_generate_response(model, model_prompt))
             render_slide_gallery(slides)
+        elif answer_mode == "Agent":
+            with st.spinner("Initializing agent..."):
+                rag = load_rag()
+                agent_executor, slide_manager = build_rag_agent(model, rag)
+            with st.status("Thinking and Retrieving...", expanded=False) as status:
+                def report(msg: str) -> None:
+                    status.update(label=msg, state="running")
+                    status.write(msg)
+                slide_manager.set_progress_callback(report)
+                st_callback = StreamlitAgentCallbackHandler(status)
+                response_dict = agent_executor.invoke(
+                    {"input": prompt},
+                    config={"callbacks": [st_callback]}
+                )
+                response = response_dict["output"]
+                slides = slide_manager.retrieved_slides
+                status.update(label="Response generated", state="complete", expanded=False)
+            st.write(response)
+            if slides:
+                render_slide_gallery(slides)
         else:
             model_prompt = prompt
             slides = None
             response = st.write_stream(stream_generate_response(model, model_prompt))
 
     assistant_entry: dict = {"role": "assistant", "content": response}
-    if answer_mode == "RAG":
+    if answer_mode == "RAG" or answer_mode == "Agent":
         assistant_entry["slides"] = slides
     st.session_state.messages.append(assistant_entry)

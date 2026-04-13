@@ -1,6 +1,6 @@
 from __future__ import annotations
-
 from typing import Any, Callable, Optional
+from langchain_core.tools import StructuredTool
 
 from tutor.modules.retrieval.retriever import Retriever
 
@@ -52,3 +52,34 @@ class RAGModule:
             on_progress("Building augmented prompt…")
         augmented_prompt = self.augment_prompt(query, retrieved_data)
         return augmented_prompt, self.slides_for_ui(retrieved_data)
+
+
+class SlideRetrieverTool:
+    def __init__(self, rag_module: RAGModule):
+        self.rag_module = rag_module
+        self.retrieved_slides = []
+        self.on_progress_callback: Optional[Callable[[str], None]] = None
+
+    def set_progress_callback(self, callback: Callable[[str], None]):
+        self.on_progress_callback = callback
+
+    def retrieve_for_agent(
+        self,
+        query: str
+    ) -> str:
+        retrieved_data, _ = self.rag_module.retrieve(query, on_progress=self.on_progress_callback)
+
+        self.retrieved_slides.extend(self.rag_module.slides_for_ui(retrieved_data))
+
+        transcripts = [d["transcript"] for d in retrieved_data]
+        if not transcripts:
+            return "No relevant slides found."
+
+        return "\n---\n".join(transcripts)
+
+    def get_tool(self):
+        return StructuredTool.from_function(
+            name="Search_Course_Slides",
+            func=self.retrieve_for_agent,
+            description="Useful for searching lecture transcripts and course slides to answer questions. Input should be a specific search query."
+        )

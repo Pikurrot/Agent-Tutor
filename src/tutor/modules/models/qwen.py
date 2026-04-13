@@ -12,7 +12,9 @@ from transformers import (
 from qwen_vl_utils import process_vision_info
 from PIL import Image
 from peft import PeftModel
-from typing import Tuple, Optional, Any, Generator
+from typing import Tuple, Optional, Any, Generator, List
+from langchain_core.language_models.llms import LLM
+from pydantic import PrivateAttr
 
 from tutor.utils.paths import MODELS_CACHE_DIR
 from tutor.modules.models.utils import get_generative_confidence
@@ -446,3 +448,30 @@ class Qwen(torch.nn.Module, BaseModel):
 
 		pred_answers_conf = get_generative_confidence(output)
 		return pred_answers, pred_answers_conf
+
+
+class LangChainQwen(LLM):  
+    _model: Any = PrivateAttr() # avoid Pydantic trying to validate the PyTorch module
+
+    def __init__(self, qwen_model: BaseModel, **kwargs):
+        super().__init__(**kwargs)
+        self._model: BaseModel = qwen_model
+
+    def _call(
+		self,
+		prompt: str,
+		stop: Optional[List[str]] = None,
+		**kwargs: Any
+	) -> str:
+        response = self._model.generate(prompt)
+
+        if stop:
+            for stop_token in stop:
+                if stop_token in response:
+                    response = response[:response.index(stop_token)]
+
+        return response
+
+    @property
+    def _llm_type(self) -> str:
+        return "custom_qwen"
