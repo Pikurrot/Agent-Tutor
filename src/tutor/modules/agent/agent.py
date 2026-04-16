@@ -9,17 +9,18 @@ from tutor.modules.retrieval.RAG import SlideRetrieverTool, RAGModule
 
 
 def build_rag_agent(qwen_model: BaseModel, rag_module: RAGModule, config: dict):
-    llm = LangChainQwen(qwen_model=qwen_model)
-    
     slide_tool_manager = SlideRetrieverTool(rag_module)
+    llm = LangChainQwen(qwen_model=qwen_model, slide_manager=slide_tool_manager)
+
     tools = [slide_tool_manager.get_tool()]
     
     template = """Answer the following questions as best you can.
 Retrieval instructions (for Search_Course_Slides tool):
 - Always try to use this tool at least once to answer the question.
+- When the question involves more than one concept, idea or term, separate the retrieval into multiple steps, making one search query after the other. For instance, if the question is about "semantic segmentation and convolutional networks", make the search query (Action Input) be "semantic segmentation", retrieve the context (Observation) and then make another search query for "convolutional networks".
+- When the retrieved context does not contain the information expected by the search query, rephrase the search query to be more specific.
 - When retrieving context, answer the question mainly based on the information and vocabulary provided in the context.
 - If the question can't be answered based on the context, inform the user about it. If the question can be answered with your general knowledge, answer it, otherwise, just inform the user that you cannot answer the question.
-- When the question involves more than one concept, idea or term, separate the retrieval into multiple steps, making one search query after the other. Specifically, if the question is about "semantic segmentation and convolutional networks", make the search query (Action Input) be "semantic segmentation", retrieve the context (Observation) and then make another search query for "convolutional networks".
 
 You have access to the following tools:
 
@@ -49,7 +50,7 @@ Thought:{agent_scratchpad}"""
         tools=tools, 
         verbose=True,
         handle_parsing_errors=True,
-        max_iterations=4
+        max_iterations=config.get("agent_config", {}).get("max_iterations", 4)
     )
     
     return agent_executor, slide_tool_manager

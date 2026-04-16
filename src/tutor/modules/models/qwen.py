@@ -2,8 +2,8 @@ from __future__ import annotations
 import threading
 import torch
 from transformers import (
-	Qwen2_5_VLForConditionalGeneration,
-	Qwen2_5_VLConfig,
+	Qwen3VLForConditionalGeneration,
+	Qwen3VLConfig,
 	AutoProcessor,
 	AutoModelForCausalLM,
 	AutoTokenizer,
@@ -22,13 +22,13 @@ from tutor.modules.models.base import BaseModel
 
 
 class QwenVLModel(torch.nn.Module, BaseModel):
-	def __init__(self, model_path: str, cache_dir: str, config: Qwen2_5_VLConfig):
+	def __init__(self, model_path: str, cache_dir: str, config: Qwen3VLConfig):
 		super(QwenVLModel, self).__init__()
 		self.lora_weights = config.lora_weights
 		self.processor = AutoProcessor.from_pretrained(model_path)
 		device_map = getattr(config, "device_map", "auto")
 		max_memory = getattr(config, "max_memory", None)
-		self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+		self.model = Qwen3VLForConditionalGeneration.from_pretrained(
 			model_path,
 			config=config,
 			cache_dir=str(MODELS_CACHE_DIR),
@@ -452,10 +452,12 @@ class Qwen(torch.nn.Module, BaseModel):
 
 class LangChainQwen(LLM):  
     _model: Any = PrivateAttr() # avoid Pydantic trying to validate the PyTorch module
+    _slide_manager: Any = PrivateAttr(default=None)
 
-    def __init__(self, qwen_model: BaseModel, **kwargs):
+    def __init__(self, qwen_model: BaseModel, slide_manager: Any = None, **kwargs):
         super().__init__(**kwargs)
         self._model: BaseModel = qwen_model
+        self._slide_manager: Any = slide_manager
 
     def _call(
 		self,
@@ -463,7 +465,10 @@ class LangChainQwen(LLM):
 		stop: Optional[List[str]] = None,
 		**kwargs: Any
 	) -> str:
-        response = self._model.generate(prompt)
+        images = None
+        if self._slide_manager and self._slide_manager.retrieved_slides:
+            images = [s["image"] for s in self._slide_manager.retrieved_slides]
+        response = self._model.generate(prompt, images=images)
 
         if stop:
             for stop_token in stop:

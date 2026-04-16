@@ -26,10 +26,10 @@ def cli_send_message(
     print(f"Answer: {pred_answers[0]}")
 
 
-def generate_response(model, msg: str) -> str:
-    _, pred_answers, _ = model([msg], return_pred_answer=True)
+def generate_response(model, msg: str, images: Optional[list] = None) -> str:
+    _, pred_answers, _ = model([msg], images=[images] if images else None, return_pred_answer=True)
     return pred_answers[0]
 
 
-def stream_generate_response(model, msg: str) -> Generator[str, None, None]:
-    yield from model.stream_generate(msg)
+def stream_generate_response(model, msg: str, images: Optional[list] = None) -> Generator[str, None, None]:
+    yield from model.stream_generate(msg, images=images)

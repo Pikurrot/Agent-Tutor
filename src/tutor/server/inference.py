@@ -56,8 +56,8 @@ def run_completion(model_path: str, mode: str, prompt: str) -> tuple[str, list[d
         return generate_response(model, prompt), []
     if mode == "rag":
         rag = get_rag_module()
-        augmented, slides_ui = rag.retrieve_and_augment(prompt, on_progress=None)
-        text = generate_response(model, augmented)
+        augmented, slides_ui, rag_images = rag.retrieve_and_augment(prompt, on_progress=None)
+        text = generate_response(model, augmented, images=rag_images)
         return text, encode_slides_for_json(slides_ui)
     if mode == "agent":
         rag = get_rag_module()
@@ -80,9 +80,9 @@ def iter_completion(model_path: str, mode: str, prompt: str) -> Iterator[tuple[s
         return
     if mode == "rag":
         rag = get_rag_module()
-        augmented, slides_ui = rag.retrieve_and_augment(prompt, on_progress=None)
+        augmented, slides_ui, rag_images = rag.retrieve_and_augment(prompt, on_progress=None)
         encoded = encode_slides_for_json(slides_ui)
-        for piece in model.stream_generate(augmented):
+        for piece in model.stream_generate(augmented, images=rag_images):
             yield ("token", piece)
         yield ("slides", encoded)
         return

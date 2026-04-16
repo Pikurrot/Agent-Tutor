@@ -47,6 +47,7 @@ MODEL_OPTIONS = {
     "Gemini 2.5 Flash": "gemini-2.5-flash",
     "Groq": "groq/openai/gpt-oss-120b",
     "Qwen3-8B": "Qwen/Qwen3-8B",
+    "Qwen3-VL-8B": "Qwen/Qwen3-VL-8B-Instruct",
 }
 
 st.set_page_config(page_title="Agent Tutor", layout="centered")
@@ -155,9 +156,9 @@ if prompt := st.chat_input("Type your message..."):
                         status.update(label=msg, state="running")
                         status.write(msg)
 
-                    model_prompt, slides = rag.retrieve_and_augment(prompt, on_progress=report)
+                    model_prompt, slides, rag_images = rag.retrieve_and_augment(prompt, on_progress=report)
                     status.update(label="Retrieval complete", state="complete", expanded=False)
-                response = st.write_stream(stream_generate_response(model, model_prompt))
+                response = st.write_stream(stream_generate_response(model, model_prompt, images=rag_images))
                 render_slide_gallery(slides)
             elif answer_mode == "Agent":
                 with st.spinner("Initializing agent..."):

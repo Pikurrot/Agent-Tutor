@@ -46,12 +46,13 @@ class RAGModule:
         self,
         query: str,
         on_progress: Optional[Callable[[str], None]] = None,
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], list]:
         retrieved_data, _metadata = self.retrieve(query, on_progress=on_progress)
         if on_progress is not None:
             on_progress("Building augmented prompt…")
         augmented_prompt = self.augment_prompt(query, retrieved_data)
-        return augmented_prompt, self.slides_for_ui(retrieved_data)
+        images = [d["image"] for d in retrieved_data]
+        return augmented_prompt, self.slides_for_ui(retrieved_data), images
 
 
 class SlideRetrieverTool:
