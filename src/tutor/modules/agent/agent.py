@@ -10,18 +10,30 @@ from tutor.modules.retrieval.RAG import SlideRetrieverTool, RAGModule
 
 def build_rag_agent(qwen_model: BaseModel, rag_module: RAGModule, config: dict):
     slide_tool_manager = SlideRetrieverTool(rag_module)
-    llm = LangChainQwen(qwen_model=qwen_model, slide_manager=slide_tool_manager)
+    agent_cfg = config.get("agent_config", {})
+    agent_max_new_tokens = int(agent_cfg.get("max_new_tokens", 1024))
+    llm = LangChainQwen(
+        qwen_model=qwen_model,
+        slide_manager=slide_tool_manager,
+        agent_max_new_tokens=agent_max_new_tokens,
+    )
 
-    tools = [slide_tool_manager.get_tool()]
+    tools = [
+        slide_tool_manager.get_tool("Search_All_Course_Context"),
+        slide_tool_manager.get_tool("Search_Document_Context"),
+        slide_tool_manager.get_tool("Retrieve_Slide_Context"),
+    ]
     
     template = """Answer the following questions as best you can.
-Retrieval instructions (for Search_Course_Slides tool):
-- Always try to use this tool at least once to answer the question.
+Retrieval instructions:
 - When the question involves more than one concept, idea or term, separate the retrieval into multiple steps, making one search query after the other. For instance, if the question is about "semantic segmentation and convolutional networks", make the search query (Action Input) be "semantic segmentation", retrieve the context (Observation) and then make another search query for "convolutional networks".
-- When the retrieved context does not contain the information expected by the search query, rephrase the search query to be more specific.
+- When the retrieved context does not contain the information expected by the search query, rephrase the search query to be more specific, or use synonims. Be original.
 - When retrieving context, answer the question mainly based on the information and vocabulary provided in the context.
-- If the question can't be answered based on the context, inform the user about it. If the question can be answered with your general knowledge, answer it, otherwise, just inform the user that you cannot answer the question.
-
+""" + \
+"You have access to the following documents:\n" + \
+'\n'.join([f"- \"{doc_name}\"" for doc_name in rag_module.retriever.documents_names]) + \
+"""
+Always use one of the available tools.
 You have access to the following tools:
 
 {tools}

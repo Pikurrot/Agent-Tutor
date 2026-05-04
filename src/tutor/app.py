@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import dotenv
+import traceback
 
 dotenv.load_dotenv()
 
@@ -48,6 +49,7 @@ MODEL_OPTIONS = {
     "Groq": "groq/openai/gpt-oss-120b",
     "Qwen3-8B": "Qwen/Qwen3-8B",
     "Qwen3-VL-8B": "Qwen/Qwen3-VL-8B-Instruct",
+    "Qwen3.5-4B": "Qwen/Qwen3.5-4B",
 }
 
 st.set_page_config(page_title="Agent Tutor", layout="centered")
@@ -122,15 +124,26 @@ if prompt := st.chat_input("Type your message..."):
             except httpx.HTTPStatusError as e:
                 detail = e.response.text
                 st.error(f"Inference API error ({e.response.status_code}): {detail}")
+                st.exception(e)
+                st.code(traceback.format_exc(), language="python")
                 response_text = None
             except httpx.RequestError as e:
                 st.error(
                     f"Could not reach inference API at {INFERENCE_API_BASE_URL}. "
                     f"Start it with: tutor serve. ({e})"
                 )
+                st.exception(e)
+                st.code(traceback.format_exc(), language="python")
                 response_text = None
             except RuntimeError as e:
                 st.error(f"Inference error: {e}")
+                st.exception(e)
+                st.code(traceback.format_exc(), language="python")
+                response_text = None
+            except Exception as e:
+                st.error(f"An unexpected error occurred: {e}")
+                st.exception(e)
+                st.code(traceback.format_exc(), language="python")
                 response_text = None
             else:
                 if outcome.text:
@@ -147,48 +160,55 @@ if prompt := st.chat_input("Type your message..."):
         model, model_type = load_model(model_path)
 
         with st.chat_message("assistant"):
-            if answer_mode == "RAG":
-                with st.spinner("Loading RAG..."):
-                    rag = load_rag()
-                with st.status("Retrieving context...", expanded=False) as status:
+            try:
+                if answer_mode == "RAG":
+                    with st.spinner("Loading RAG..."):
+                        rag = load_rag()
+                    with st.status("Retrieving context...", expanded=False) as status:
 
-                    def report(msg: str) -> None:
-                        status.update(label=msg, state="running")
-                        status.write(msg)
+                        def report(msg: str) -> None:
+                            status.update(label=msg, state="running")
+                            status.write(msg)
 
-                    model_prompt, slides, rag_images = rag.retrieve_and_augment(prompt, on_progress=report)
-                    status.update(label="Retrieval complete", state="complete", expanded=False)
-                response = st.write_stream(stream_generate_response(model, model_prompt, images=rag_images))
-                render_slide_gallery(slides)
-            elif answer_mode == "Agent":
-                with st.spinner("Initializing agent..."):
-                    rag = load_rag()
-                    agent_executor, slide_manager = build_rag_agent(model, rag, cfg)
-                with st.status("Thinking and Retrieving...", expanded=False) as status:
-                    def report(msg: str) -> None:
-                        status.update(label=msg, state="running")
-                        status.write(msg)
-
-                    slide_manager.set_progress_callback(report)
-                    st_callback = StreamlitAgentCallbackHandler(status)
-                    response_dict = agent_executor.invoke(
-                        {"input": prompt},
-                        config={"callbacks": [st_callback]},
-                    )
-                    full_answer = response_dict["output"]
-                    slides = slide_manager.retrieved_slides
-                    status.update(label="Response generated", state="complete", expanded=False)
-                stream_cfg = load_config(DEFAULT_CONFIG_PATH)
-                delay, chunk = get_agent_mock_stream_config(stream_cfg)
-                response = st.write_stream(
-                    mock_stream_text(full_answer, delay, chunk)
-                )
-                if slides:
+                        model_prompt, slides, rag_images = rag.retrieve_and_augment(prompt, on_progress=report)
+                        status.update(label="Retrieval complete", state="complete", expanded=False)
+                    response = st.write_stream(stream_generate_response(model, model_prompt, images=rag_images))
                     render_slide_gallery(slides)
-            else:
-                model_prompt = prompt
+                elif answer_mode == "Agent":
+                    with st.spinner("Initializing agent..."):
+                        rag = load_rag()
+                        agent_executor, slide_manager = build_rag_agent(model, rag, cfg)
+                    with st.status("Thinking and Retrieving...", expanded=False) as status:
+                        def report(msg: str) -> None:
+                            status.update(label=msg, state="running")
+                            status.write(msg)
+
+                        slide_manager.set_progress_callback(report)
+                        st_callback = StreamlitAgentCallbackHandler(status)
+                        response_dict = agent_executor.invoke(
+                            {"input": prompt},
+                            config={"callbacks": [st_callback]},
+                        )
+                        full_answer = response_dict["output"]
+                        slides = slide_manager.retrieved_slides
+                        status.update(label="Response generated", state="complete", expanded=False)
+                    stream_cfg = load_config(DEFAULT_CONFIG_PATH)
+                    delay, chunk = get_agent_mock_stream_config(stream_cfg)
+                    response = st.write_stream(
+                        mock_stream_text(full_answer, delay, chunk)
+                    )
+                    if slides:
+                        render_slide_gallery(slides)
+                else:
+                    model_prompt = prompt
+                    slides = None
+                    response = st.write_stream(stream_generate_response(model, model_prompt))
+            except Exception as e:
+                st.error(f"An error occurred during local inference: {e}")
+                st.exception(e)
+                st.code(traceback.format_exc(), language="python")
+                response = None
                 slides = None
-                response = st.write_stream(stream_generate_response(model, model_prompt))
 
         assistant_entry = {"role": "assistant", "content": response}
         if answer_mode == "RAG" or answer_mode == "Agent":

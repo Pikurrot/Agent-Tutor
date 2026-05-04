@@ -68,10 +68,19 @@ class QwenVLModel(torch.nn.Module, BaseModel):
 		self.model.train()
 		self.train_mode = True
 
-	def generate(self, prompt: str, images: Optional[list] = None, **kwargs) -> str:
+	def generate(
+		self,
+		prompt: str,
+		images: Optional[list] = None,
+		stop: Optional[List[str]] = None,
+		max_new_tokens: Optional[int] = None,
+		**kwargs,
+	) -> str:
 		images_list = [images] if images else None
 		inputs, _, _ = self.prepare_inputs_for_vqa([prompt], images_list)
-		pred_answers, _ = self.get_answer_from_model_output(inputs)
+		pred_answers, _ = self.get_answer_from_model_output(
+			inputs, stop=stop, max_new_tokens=max_new_tokens
+		)
 		return pred_answers[0]
 
 	def stream_generate(self, prompt: str, images: Optional[list] = None, **kwargs) -> Generator[str, None, None]:
@@ -264,16 +273,22 @@ class QwenVLModel(torch.nn.Module, BaseModel):
 
 	def get_answer_from_model_output(
 			self,
-			inputs: dict
+			inputs: dict,
+			stop: Optional[List[str]] = None,
+			max_new_tokens: Optional[int] = None,
 	) -> Tuple[list, list]:
+		gen_kwargs: dict = {
+			**inputs,
+			"output_scores": True,
+			"return_dict_in_generate": True,
+			"output_attentions": False,
+			"max_new_tokens": max_new_tokens if max_new_tokens is not None else self.max_new_tokens,
+		}
+		if stop:
+			gen_kwargs["stop_strings"] = list(stop)
+			gen_kwargs["tokenizer"] = self.processor.tokenizer
 		with torch.no_grad():
-			output = self.model.generate(
-				**inputs,
-				output_scores=True,
-				return_dict_in_generate=True,
-				output_attentions=False,
-				max_new_tokens=self.max_new_tokens,
-			)
+			output = self.model.generate(**gen_kwargs)
 
 		generated_ids_trimmed = [
 			out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], output.sequences)
@@ -334,9 +349,17 @@ class Qwen(torch.nn.Module, BaseModel):
 		self.model.train()
 		self.train_mode = True
 
-	def generate(self, prompt: str, **kwargs) -> str:
+	def generate(
+		self,
+		prompt: str,
+		stop: Optional[List[str]] = None,
+		max_new_tokens: Optional[int] = None,
+		**kwargs,
+	) -> str:
 		inputs, _, _ = self.prepare_inputs([prompt])
-		pred_answers, _ = self.get_answer_from_model_output(inputs)
+		pred_answers, _ = self.get_answer_from_model_output(
+			inputs, stop=stop, max_new_tokens=max_new_tokens
+		)
 		return pred_answers[0]
 
 	def stream_generate(self, prompt: str, **kwargs) -> Generator[str, None, None]:
@@ -426,15 +449,21 @@ class Qwen(torch.nn.Module, BaseModel):
 
 	def get_answer_from_model_output(
 			self,
-			inputs: dict
+			inputs: dict,
+			stop: Optional[List[str]] = None,
+			max_new_tokens: Optional[int] = None,
 	) -> Tuple[list, list]:
+		gen_kwargs: dict = {
+			**inputs,
+			"output_scores": True,
+			"return_dict_in_generate": True,
+			"max_new_tokens": max_new_tokens if max_new_tokens is not None else self.max_new_tokens,
+		}
+		if stop:
+			gen_kwargs["stop_strings"] = list(stop)
+			gen_kwargs["tokenizer"] = self.tokenizer
 		with torch.no_grad():
-			output = self.model.generate(
-				**inputs,
-				output_scores=True,
-				return_dict_in_generate=True,
-				max_new_tokens=self.max_new_tokens,
-			)
+			output = self.model.generate(**gen_kwargs)
 
 		generated_ids_trimmed = [
 			out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], output.sequences)
@@ -453,11 +482,19 @@ class Qwen(torch.nn.Module, BaseModel):
 class LangChainQwen(LLM):  
     _model: Any = PrivateAttr() # avoid Pydantic trying to validate the PyTorch module
     _slide_manager: Any = PrivateAttr(default=None)
+    _agent_max_new_tokens: int = PrivateAttr(default=1024)
 
-    def __init__(self, qwen_model: BaseModel, slide_manager: Any = None, **kwargs):
+    def __init__(
+        self,
+        qwen_model: BaseModel,
+        slide_manager: Any = None,
+        agent_max_new_tokens: int = 1024,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._model: BaseModel = qwen_model
         self._slide_manager: Any = slide_manager
+        self._agent_max_new_tokens: int = agent_max_new_tokens
 
     def _call(
 		self,
@@ -465,10 +502,12 @@ class LangChainQwen(LLM):
 		stop: Optional[List[str]] = None,
 		**kwargs: Any
 	) -> str:
-        images = None
-        if self._slide_manager and self._slide_manager.retrieved_slides:
-            images = [s["image"] for s in self._slide_manager.retrieved_slides]
-        response = self._model.generate(prompt, images=images)
+        response = self._model.generate(
+            prompt,
+            images=None,
+            stop=stop,
+            max_new_tokens=self._agent_max_new_tokens,
+        )
 
         if stop:
             for stop_token in stop:

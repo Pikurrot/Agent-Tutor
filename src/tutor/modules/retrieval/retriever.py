@@ -19,6 +19,7 @@ class Retriever:
         self.raw_dir = SUBJECTS_ROOT / self.subject_name / "raw"
 
         self.embeder = Embeder(self.config)
+        self.aggregated_document_embeddings = []
         self.documents_embeddings = {}
         self.documents_data = {}
         self.documents_names = [pdf_name.stem for pdf_name in Path(SUBJECTS_ROOT / self.subject_name / "raw" / "slides").glob("*.pdf")]
@@ -103,15 +104,64 @@ class Retriever:
 
         return transcript_embeddings
 
+    def aggregate_document_embeddings(self, save_path: Path) -> torch.Tensor:
+        if save_path.exists():
+            loaded = torch.load(save_path, map_location="cpu", weights_only=False)
+            if isinstance(loaded, torch.Tensor) and loaded.ndim == 2:
+                self.aggregated_document_embeddings = loaded
+                return self.aggregated_document_embeddings
+
+        per_doc_aggregates = []
+        for doc_name in self.documents_names:
+            if doc_name not in self.documents_embeddings:
+                doc_save_path = self.processed_dir / "embeddings" / f"{doc_name}.pt"
+                if not doc_save_path.exists() and doc_name not in self.documents_data:
+                    self.load_document_data(doc_name)
+                self.encode_document(doc_name, doc_save_path)
+            document_embeddings = self.documents_embeddings[doc_name]
+            document_embeddings = torch.as_tensor(document_embeddings)
+            aggregated = torch.sum(document_embeddings, dim=0)
+            per_doc_aggregates.append(aggregated)
+        self.aggregated_document_embeddings = torch.stack(per_doc_aggregates, dim=0)
+        os.makedirs(save_path.parent, exist_ok=True)
+        torch.save(self.aggregated_document_embeddings, save_path)
+        return self.aggregated_document_embeddings
+
+    def get_similar_document(
+        self,
+        query: str
+    ) -> str:
+        if not isinstance(self.aggregated_document_embeddings, torch.Tensor):
+            save_path = self.processed_dir / "embeddings" / "aggregated_document_embeddings.pt"
+            self.aggregate_document_embeddings(save_path)
+        query_embedding = self.embeder.encode([query], mode="query")
+        sim = self.embeder.similarity(query_embedding, self.aggregated_document_embeddings)
+        sim = sim.detach().reshape(-1)
+        if sim.numel() == 0:
+            raise RuntimeError("No documents available to compare against the query.")
+        best_index = int(torch.argmax(sim).item())
+        return self.documents_names[best_index]
+
     def retrieve(
         self,
-        query: str,
+        query: Optional[str] = None,
         document_name: Optional[str] = None,
+        slide_number: Optional[int] = None,
         on_progress: Optional[Callable] = None,
     ) -> tuple[list[dict], dict]:
+        if query is None and document_name is not None and slide_number is None:
+            raise ValueError("query is required if document_name is provided and slide_number is not")
+        if slide_number is not None and document_name is None:
+            raise ValueError("document_name is required if slide_number is provided")
+
         def progress(msg: str) -> None:
             if on_progress is not None:
                 on_progress(msg)
+
+        if self.my_config["mode"] == "tree" and document_name is None:
+            document_name = self.get_similar_document(query)
+            progress(f"Retrieving context from similar document: {document_name}")
+            return self.retrieve(query, document_name, slide_number, on_progress)
 
         if document_name is None:
             progress("Preparing retrieval...")
@@ -130,7 +180,7 @@ class Retriever:
                         progress(f"Encoding embeddings: {doc_name}")
                     self.encode_document(doc_name, save_path)
                 document_embeddings = self.documents_embeddings[doc_name]
-                document_embeddings = torch.tensor(document_embeddings)
+                document_embeddings = torch.as_tensor(document_embeddings)
                 total_document_embeddings.append(document_embeddings)
                 total_document_names.extend([doc_name] * document_embeddings.shape[0])
                 total_original_indices.extend(list(range(document_embeddings.shape[0])))
@@ -157,20 +207,30 @@ class Retriever:
             if name not in self.documents_data:
                 progress(f"Loading slides/transcripts: {name}")
                 self.load_document_data(name)
-            if name not in self.documents_embeddings:
-                save_path = self.processed_dir / "embeddings" / f"{name}.pt"
-                if save_path.exists():
-                    progress(f"Loading embeddings: {name}")
-                else:
-                    progress(f"Encoding embeddings: {name}")
-                self.encode_document(name, save_path)
             document_data = self.documents_data[name]
-            document_embeddings = self.documents_embeddings[name]
+            if slide_number is not None:
+                num_slides = len(document_data)
+                if not 0 <= int(slide_number) < num_slides:
+                    raise ValueError(
+                        f"slide_number {slide_number} is out of range for document "
+                        f"\"{name}\" (valid range: 0..{num_slides - 1})."
+                    )
+                top_indices = [int(slide_number)]
+            else:
+                if name not in self.documents_embeddings:
+                    save_path = self.processed_dir / "embeddings" / f"{name}.pt"
+                    if save_path.exists():
+                        progress(f"Loading embeddings: {name}")
+                    else:
+                        progress(f"Encoding embeddings: {name}")
+                    self.encode_document(name, save_path)
+                document_embeddings = self.documents_embeddings[name]
 
-            progress("Retrieving context...")
-            query_embedding = self.embeder.encode([query], mode="query")
-            sim = self.embeder.similarity(query_embedding, document_embeddings)
-            top_indices = self._get_top_indices(sim)
+                progress("Retrieving context...")
+                query_embedding = self.embeder.encode([query], mode="query")
+                sim = self.embeder.similarity(query_embedding, document_embeddings)
+                top_indices = self._get_top_indices(sim)
+
             retrieved_data = []
             for i in top_indices:
                 ii = int(i)

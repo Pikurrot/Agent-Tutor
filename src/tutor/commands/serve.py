@@ -12,8 +12,8 @@ def add_serve_args(p):
     p.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Listen port (default: 8000)",
+        default=8002,
+        help="Listen port (default: 8002)",
     )
 
 

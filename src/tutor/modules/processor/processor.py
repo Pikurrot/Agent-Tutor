@@ -2,6 +2,7 @@ from __future__ import annotations
 import pickle
 import json
 import cv2
+import torch
 import concurrent.futures
 import numpy as np
 from tqdm import tqdm

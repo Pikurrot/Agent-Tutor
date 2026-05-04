@@ -1,5 +1,6 @@
 retrieval_config:
   subject_name: deep-learning
+  mode: tree # full, tree
   embeder_config:
     model_path: Qwen/Qwen3-Embedding-0.6B
   retrieval_mode: zscore

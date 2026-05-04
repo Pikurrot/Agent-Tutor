@@ -1,7 +1,7 @@
 device: cuda
-visible_devices: "0"
+visible_devices: "4"
 model_path: Qwen/Qwen3-8B
 # model_path: gemini-2.5-flash
 
 use_inference_api: true
-inference_api_base_url: "http://127.0.0.1:8000"
+inference_api_base_url: "http://127.0.0.1:8002"
