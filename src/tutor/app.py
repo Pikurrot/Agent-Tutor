@@ -26,6 +26,11 @@ from tutor.utils.paths import MODELS_CACHE_DIR  # noqa: E402
 from tutor.core.chat import stream_generate_response  # noqa: E402
 from tutor.modules.retrieval.RAG import RAGModule  # noqa: E402
 from tutor.modules.agent.agent import build_rag_agent, StreamlitAgentCallbackHandler  # noqa: E402
+from tutor.modules.agent.summarizer import ConversationMemory, roll_memory  # noqa: E402
+
+
+def _empty_memory_dict() -> dict:
+    return {"summary": "", "last_interaction": None}
 
 COLS_PER_SLIDE_ROW = 4
 
@@ -84,11 +89,14 @@ with st.sidebar:
 
     if st.button("Clear Chat"):
         st.session_state.messages = []
+        st.session_state.conversation_memory = _empty_memory_dict()
         st.rerun()
 
 # Session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "conversation_memory" not in st.session_state:
+    st.session_state.conversation_memory = _empty_memory_dict()
 
 # Render chat history
 for msg in st.session_state.messages:
@@ -109,6 +117,9 @@ if prompt := st.chat_input("Type your message..."):
         slides: list | None = None
         with st.chat_message("assistant"):
             outcome = StreamingOutcome()
+            memory_to_send = (
+                st.session_state.conversation_memory if answer_mode == "Agent" else None
+            )
 
             def api_token_gen():
                 yield from iter_streaming_complete(
@@ -117,6 +128,7 @@ if prompt := st.chat_input("Type your message..."):
                     api_mode,
                     prompt,
                     outcome,
+                    memory=memory_to_send,
                 )
 
             try:
@@ -151,6 +163,8 @@ if prompt := st.chat_input("Type your message..."):
                 slides = outcome.slides
                 if answer_mode in ("RAG", "Agent") and slides:
                     render_slide_gallery(slides)
+                if answer_mode == "Agent" and outcome.memory is not None:
+                    st.session_state.conversation_memory = outcome.memory
         if response_text is not None:
             assistant_entry: dict = {"role": "assistant", "content": response_text}
             if answer_mode in ("RAG", "Agent"):
@@ -177,7 +191,12 @@ if prompt := st.chat_input("Type your message..."):
                 elif answer_mode == "Agent":
                     with st.spinner("Initializing agent..."):
                         rag = load_rag()
-                        agent_executor, slide_manager = build_rag_agent(model, rag, cfg)
+                        current_mem = ConversationMemory.from_dict(
+                            st.session_state.conversation_memory
+                        )
+                        agent_executor, slide_manager = build_rag_agent(
+                            model, rag, cfg, memory=current_mem
+                        )
                     with st.status("Thinking and Retrieving...", expanded=False) as status:
                         def report(msg: str) -> None:
                             status.update(label=msg, state="running")
@@ -192,6 +211,7 @@ if prompt := st.chat_input("Type your message..."):
                         full_answer = response_dict["output"]
                         slides = slide_manager.retrieved_slides
                         status.update(label="Response generated", state="complete", expanded=False)
+
                     stream_cfg = load_config(DEFAULT_CONFIG_PATH)
                     delay, chunk = get_agent_mock_stream_config(stream_cfg)
                     response = st.write_stream(
@@ -199,6 +219,21 @@ if prompt := st.chat_input("Type your message..."):
                     )
                     if slides:
                         render_slide_gallery(slides)
+
+                    agent_cfg = cfg.get("agent_config", {}) or {}
+                    memory_cfg = agent_cfg.get("memory", {}) or {}
+                    if bool(memory_cfg.get("enabled", True)):
+                        with st.spinner("Updating conversation memory..."):
+                            new_mem = roll_memory(
+                                current_mem,
+                                new_user=prompt,
+                                new_assistant=full_answer,
+                                model=model,
+                                summary_max_new_tokens=int(
+                                    memory_cfg.get("summary_max_new_tokens", 512)
+                                ),
+                            )
+                        st.session_state.conversation_memory = new_mem.to_dict()
                 else:
                     model_prompt = prompt
                     slides = None

@@ -3,8 +3,8 @@ retrieval_config:
   mode: tree # full, tree
   embeder_config:
     model_path: Qwen/Qwen3-Embedding-0.6B
-  retrieval_mode: zscore
-  retrieval_k: 10
+  retrieval_mode: topk # topk, threshold, zscore
+  retrieval_k: 3
   retrieval_threshold: 0.6
   retrieval_zscore: 2.0
   retrieval_zscore_max_k: 3

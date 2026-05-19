@@ -1,4 +1,6 @@
 from __future__ import annotations
+from typing import Optional
+
 from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -6,12 +8,24 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 from tutor.modules.models.base import BaseModel
 from tutor.modules.models.qwen import LangChainQwen
 from tutor.modules.retrieval.RAG import SlideRetrieverTool, RAGModule
+from tutor.modules.agent.summarizer import (
+    ConversationMemory,
+    format_memory_for_prompt,
+)
 
 
-def build_rag_agent(qwen_model: BaseModel, rag_module: RAGModule, config: dict):
+def build_rag_agent(
+    qwen_model: BaseModel,
+    rag_module: RAGModule,
+    config: dict,
+    memory: Optional[ConversationMemory] = None,
+):
     slide_tool_manager = SlideRetrieverTool(rag_module)
     agent_cfg = config.get("agent_config", {})
     agent_max_new_tokens = int(agent_cfg.get("max_new_tokens", 1024))
+    memory_cfg = agent_cfg.get("memory", {}) or {}
+    memory_enabled = bool(memory_cfg.get("enabled", True))
+
     llm = LangChainQwen(
         qwen_model=qwen_model,
         slide_manager=slide_tool_manager,
@@ -23,7 +37,13 @@ def build_rag_agent(qwen_model: BaseModel, rag_module: RAGModule, config: dict):
         slide_tool_manager.get_tool("Search_Document_Context"),
         slide_tool_manager.get_tool("Retrieve_Slide_Context"),
     ]
-    
+
+    memory_block = (
+        format_memory_for_prompt(memory) if memory_enabled and memory is not None else ""
+    )
+    if memory_block:
+        memory_block = memory_block.replace("{", "{{").replace("}", "}}")
+
     template = """Answer the following questions as best you can.
 Retrieval instructions:
 - When the question involves more than one concept, idea or term, separate the retrieval into multiple steps, making one search query after the other. For instance, if the question is about "semantic segmentation and convolutional networks", make the search query (Action Input) be "semantic segmentation", retrieve the context (Observation) and then make another search query for "convolutional networks".
@@ -36,8 +56,7 @@ Retrieval instructions:
 Always use one of the available tools.
 You have access to the following tools:
 
-{tools}
-
+{tools}""" + memory_block + """
 Use the following format:
 
 Question: the input question you must answer

@@ -4,7 +4,7 @@ import base64
 import io
 import json
 from dataclasses import dataclass, field
-from typing import Generator
+from typing import Generator, Optional
 
 import httpx
 from PIL import Image
@@ -25,16 +25,21 @@ def complete(
     mode: str,
     prompt: str,
     *,
+    memory: Optional[dict] = None,
     timeout: float = 600.0,
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], Optional[dict]]:
     """
     Call POST /v1/complete on the inference server.
 
-    Returns (assistant_text, slides) where each slide is
-    {"image": PIL.Image, "caption": str} for render_slide_gallery.
+    Returns ``(assistant_text, slides, updated_memory)`` where each slide is
+    ``{"image": PIL.Image, "caption": str}`` for ``render_slide_gallery`` and
+    ``updated_memory`` is the server-rolled conversation memory (or ``None``
+    for non-agent modes).
     """
     url = base_url.rstrip("/") + "/v1/complete"
-    payload = {"model_path": model_path, "mode": mode, "prompt": prompt}
+    payload: dict = {"model_path": model_path, "mode": mode, "prompt": prompt}
+    if memory is not None:
+        payload["memory"] = memory
     with httpx.Client(timeout=timeout) as client:
         response = client.post(url, json=payload)
         response.raise_for_status()
@@ -42,13 +47,14 @@ def complete(
 
     text = data["text"]
     slides_out = _decode_slides_payload(data.get("slides") or [])
-    return text, slides_out
+    return text, slides_out, data.get("memory")
 
 
 @dataclass
 class StreamingOutcome:
     text: str = ""
     slides: list[dict] = field(default_factory=list)
+    memory: Optional[dict] = None
 
 
 def iter_streaming_complete(
@@ -58,13 +64,16 @@ def iter_streaming_complete(
     prompt: str,
     outcome: StreamingOutcome,
     *,
+    memory: Optional[dict] = None,
     timeout: float = 600.0,
 ) -> Generator[str, None, None]:
     """
     POST /v1/complete/stream (NDJSON). Yields text chunks; fills ``outcome`` on success.
     """
     url = base_url.rstrip("/") + "/v1/complete/stream"
-    payload = {"model_path": model_path, "mode": mode, "prompt": prompt}
+    payload: dict = {"model_path": model_path, "mode": mode, "prompt": prompt}
+    if memory is not None:
+        payload["memory"] = memory
     parts: list[str] = []
     with httpx.Client(timeout=timeout) as client:
         with client.stream("POST", url, json=payload) as response:
@@ -83,6 +92,7 @@ def iter_streaming_complete(
                     yield chunk
                 elif t == "end":
                     outcome.slides = _decode_slides_payload(msg.get("slides") or [])
+                    outcome.memory = msg.get("memory")
                     outcome.text = "".join(parts)
                 elif t == "err":
                     raise RuntimeError(msg.get("d", "inference error"))
