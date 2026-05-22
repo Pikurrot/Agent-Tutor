@@ -212,3 +212,6 @@ commands_log.txt
 temp.ipynb
 screenlog.0
 notebooks/
+qa_generation_prompt.txt
+data/eval/
+eval_runs/

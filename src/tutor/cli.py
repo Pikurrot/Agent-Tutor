@@ -17,6 +17,7 @@ from tutor.commands.app import add_app_args, run_app  # noqa: E402
 from tutor.commands.serve import add_serve_args, run_serve  # noqa: E402
 from tutor.utils.misc import seed_everything # noqa: E402
 from tutor.commands.process import add_process_args, run_process # noqa: E402
+from tutor.commands.eval import add_eval_args, run_eval  # noqa: E402
 
 
 dotenv.load_dotenv()
@@ -37,6 +38,9 @@ def build_parser():
 
     p_serve = sub.add_parser("serve", help="Run inference HTTP API (model + RAG in this process)")
     add_serve_args(p_serve)
+
+    p_eval = sub.add_parser("eval", help="Run agent evaluation on a Q&A dataset")
+    add_eval_args(p_eval)
 
     return p
 
@@ -60,6 +64,8 @@ def main():
         run_app(args)
     elif args.command == "serve":
         run_serve(args)
+    elif args.command == "eval":
+        run_eval(args)
     else:
         parser.print_help()
         sys.exit(1)

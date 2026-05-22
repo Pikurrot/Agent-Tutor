@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Optional
+import json
+from typing import Any, Optional
 
 from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
@@ -85,6 +86,71 @@ Thought:{agent_scratchpad}"""
     )
     
     return agent_executor, slide_tool_manager
+
+
+def _extract_thought_from_log(log: str) -> str:
+    if "Action:" in log:
+        return log.split("Action:")[0].strip()
+    return log.strip()
+
+
+def _normalize_action_input(tool_input: Any) -> Any:
+    if isinstance(tool_input, dict):
+        return tool_input
+    if isinstance(tool_input, str):
+        stripped = tool_input.strip()
+        if stripped.startswith("{"):
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+        return tool_input
+    return str(tool_input)
+
+
+def _metadata_from_action(tool: str, tool_input: Any) -> tuple[Optional[str], Optional[int]]:
+    document: Optional[str] = None
+    slide_number: Optional[int] = None
+    normalized = _normalize_action_input(tool_input)
+
+    if tool == "Search_Document_Context" and isinstance(normalized, dict):
+        document = normalized.get("document_name")
+        if document is not None:
+            document = str(document)
+    elif tool == "Retrieve_Slide_Context" and isinstance(normalized, dict):
+        document = normalized.get("document_name")
+        if document is not None:
+            document = str(document)
+        raw_slide = normalized.get("slide_number")
+        if raw_slide is not None:
+            slide_number = int(raw_slide)
+    return document, slide_number
+
+
+class EvalAgentTraceCallback(BaseCallbackHandler):
+    """Collects ReAct steps for evaluation (no observation content)."""
+
+    def __init__(self):
+        self.steps: list[dict[str, Any]] = []
+
+    @property
+    def chain_length(self) -> int:
+        return len(self.steps)
+
+    def on_agent_action(self, action, **kwargs):
+        thought = _extract_thought_from_log(action.log)
+        tool_input = _normalize_action_input(action.tool_input)
+        document, slide_number = _metadata_from_action(action.tool, action.tool_input)
+        self.steps.append(
+            {
+                "step": len(self.steps) + 1,
+                "thought": thought,
+                "action": action.tool,
+                "action_input": tool_input,
+                "document": document,
+                "slide_number": slide_number,
+            }
+        )
 
 
 class StreamlitAgentCallbackHandler(BaseCallbackHandler):
