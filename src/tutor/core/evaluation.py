@@ -157,7 +157,7 @@ def persist_results(
     by_id: dict[str, dict[str, Any]],
 ) -> None:
     save_all_results(results_path, ordered_results_rows(all_items, by_id))
-º
+
 
 def _result_to_row(result: EvalResult) -> dict[str, Any]:
     return {
@@ -215,16 +215,42 @@ def run_agent_with_trace(
     return generated, agent_steps, chain_length, slides_count
 
 
-def _build_judge_client() -> genai.Client:
-    keys_raw = os.getenv("GEMINI_API_KEYS")
-    if not keys_raw:
-        raise EnvironmentError(
-            "GEMINI_API_KEYS environment variable is required for evaluation judging"
+class RotatingJudgeClient:
+    """Wraps multiple Gemini API keys and rotates to the next one on errors."""
+
+    def __init__(self) -> None:
+        keys_raw = os.getenv("GEMINI_API_KEYS")
+        if not keys_raw:
+            raise EnvironmentError(
+                "GEMINI_API_KEYS environment variable is required for evaluation judging"
+            )
+        self.api_keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
+        if not self.api_keys:
+            raise EnvironmentError("GEMINI_API_KEYS is set but contains no valid keys")
+        self._idx = 0
+        self._errors = [0] * len(self.api_keys)
+        self.client = self._make_client()
+        print(f"Judge: loaded {len(self.api_keys)} API key(s)")
+
+    def _make_client(self) -> genai.Client:
+        return genai.Client(api_key=self.api_keys[self._idx])
+
+    def rotate(self, exc: Exception) -> None:
+        """Record the error on the current key and switch to the next one.
+
+        Raises if every key has accumulated 2+ errors (all exhausted).
+        """
+        self._errors[self._idx] += 1
+        print(
+            f"  Judge key[{self._idx}] error ({self._errors[self._idx]} total): {exc}. "
+            "Rotating to next key..."
         )
-    api_key = keys_raw.split(",")[0].strip()
-    if not api_key:
-        raise EnvironmentError("GEMINI_API_KEYS is set but empty")
-    return genai.Client(api_key=api_key)
+        if all(e >= 2 for e in self._errors):
+            raise RuntimeError(
+                f"All {len(self.api_keys)} Gemini judge API key(s) exhausted."
+            ) from exc
+        self._idx = (self._idx + 1) % len(self.api_keys)
+        self.client = self._make_client()
 
 
 def _build_judge_user_message(question: str, ground_truth: str, generated: str) -> str:
@@ -251,7 +277,7 @@ def _parse_judge_response(text: str) -> tuple[Optional[bool], Optional[str], Opt
 
 
 def judge_answer(
-    client: genai.Client,
+    judge_client: RotatingJudgeClient,
     question: str,
     ground_truth: str,
     generated: str,
@@ -261,16 +287,24 @@ def judge_answer(
     thinking_budget: int,
     system_instruction: str,
 ) -> tuple[Optional[bool], Optional[str], Optional[str]]:
+    def _call(prompt: str) -> str:
+        """Call Gemini, rotating to the next key on any API error."""
+        while True:
+            try:
+                return gemini_generate_answer(
+                    judge_client.client,
+                    prompt=prompt,
+                    model=model,
+                    thinking_budget=thinking_budget,
+                    temperature=temperature,
+                    system_instruction=system_instruction,
+                )
+            except Exception as exc:
+                judge_client.rotate(exc)
+
     user_message = _build_judge_user_message(question, ground_truth, generated)
     try:
-        raw = gemini_generate_answer(
-            client,
-            prompt=user_message,
-            model=model,
-            thinking_budget=thinking_budget,
-            temperature=temperature,
-            system_instruction=system_instruction,
-        )
+        raw = _call(user_message)
     except Exception as e:
         return None, None, f"Judge API error: {e}"
 
@@ -284,14 +318,7 @@ def judge_answer(
         "Respond with strict JSON only, no markdown, keys: acceptable (boolean), reasoning (string)."
     )
     try:
-        raw_retry = gemini_generate_answer(
-            client,
-            prompt=retry_prompt,
-            model=model,
-            thinking_budget=thinking_budget,
-            temperature=temperature,
-            system_instruction=system_instruction,
-        )
+        raw_retry = _call(retry_prompt)
     except Exception as e:
         return None, None, f"Judge API error on retry: {e}"
     return _parse_judge_response(raw_retry)
@@ -374,7 +401,7 @@ def run_evaluation(
             f"{agent_work_count} need agent"
         )
 
-    judge_client = _build_judge_client()
+    judge_client = RotatingJudgeClient()
     started_at = datetime.now(timezone.utc).isoformat()
     processed_in_run = 0
 
