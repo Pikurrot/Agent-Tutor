@@ -5,3 +5,12 @@ agent_config:
   memory:
     enabled: true
     summary_max_new_tokens: 512
+
+pedagogic_config:
+  enabled: true
+  max_iterations: 3
+  answer_max_iterations: 4
+  anchor_max_new_tokens: 1024
+  move_max_new_tokens: 256
+  max_hints_before_reveal: 5
+  reveal_on_request: true

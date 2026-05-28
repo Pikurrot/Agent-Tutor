@@ -26,20 +26,24 @@ def complete(
     prompt: str,
     *,
     memory: Optional[dict] = None,
+    teaching_session: Optional[dict] = None,
+    debug: bool = False,
     timeout: float = 600.0,
-) -> tuple[str, list[dict], Optional[dict]]:
+) -> tuple[str, list[dict], Optional[dict], Optional[dict], Optional[dict]]:
     """
     Call POST /v1/complete on the inference server.
 
-    Returns ``(assistant_text, slides, updated_memory)`` where each slide is
-    ``{"image": PIL.Image, "caption": str}`` for ``render_slide_gallery`` and
-    ``updated_memory`` is the server-rolled conversation memory (or ``None``
-    for non-agent modes).
+    Returns ``(assistant_text, slides, updated_memory, updated_teaching_session)``
+    where each slide is ``{"image": PIL.Image, "caption": str}`` and the last
+    two fields are ``None`` for modes that don't use them.
     """
     url = base_url.rstrip("/") + "/v1/complete"
     payload: dict = {"model_path": model_path, "mode": mode, "prompt": prompt}
     if memory is not None:
         payload["memory"] = memory
+    if teaching_session is not None:
+        payload["teaching_session"] = teaching_session
+    payload["debug"] = bool(debug)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(url, json=payload)
         response.raise_for_status()
@@ -47,7 +51,13 @@ def complete(
 
     text = data["text"]
     slides_out = _decode_slides_payload(data.get("slides") or [])
-    return text, slides_out, data.get("memory")
+    return (
+        text,
+        slides_out,
+        data.get("memory"),
+        data.get("teaching_session"),
+        data.get("debug_data"),
+    )
 
 
 @dataclass
@@ -55,6 +65,8 @@ class StreamingOutcome:
     text: str = ""
     slides: list[dict] = field(default_factory=list)
     memory: Optional[dict] = None
+    teaching_session: Optional[dict] = None
+    debug_data: Optional[dict] = None
 
 
 def iter_streaming_complete(
@@ -65,6 +77,8 @@ def iter_streaming_complete(
     outcome: StreamingOutcome,
     *,
     memory: Optional[dict] = None,
+    teaching_session: Optional[dict] = None,
+    debug: bool = False,
     timeout: float = 600.0,
 ) -> Generator[str, None, None]:
     """
@@ -74,6 +88,9 @@ def iter_streaming_complete(
     payload: dict = {"model_path": model_path, "mode": mode, "prompt": prompt}
     if memory is not None:
         payload["memory"] = memory
+    if teaching_session is not None:
+        payload["teaching_session"] = teaching_session
+    payload["debug"] = bool(debug)
     parts: list[str] = []
     with httpx.Client(timeout=timeout) as client:
         with client.stream("POST", url, json=payload) as response:
@@ -93,6 +110,8 @@ def iter_streaming_complete(
                 elif t == "end":
                     outcome.slides = _decode_slides_payload(msg.get("slides") or [])
                     outcome.memory = msg.get("memory")
+                    outcome.teaching_session = msg.get("teaching_session")
+                    outcome.debug_data = msg.get("debug_data")
                     outcome.text = "".join(parts)
                 elif t == "err":
                     raise RuntimeError(msg.get("d", "inference error"))

@@ -26,15 +26,22 @@ from tutor.utils.paths import MODELS_CACHE_DIR  # noqa: E402
 from tutor.core.chat import stream_generate_response  # noqa: E402
 from tutor.modules.retrieval.RAG import RAGModule  # noqa: E402
 from tutor.modules.agent.agent import build_rag_agent, StreamlitAgentCallbackHandler  # noqa: E402
+from tutor.modules.agent.pedagogy import TeachingSession  # noqa: E402
 from tutor.modules.agent.summarizer import ConversationMemory, roll_memory  # noqa: E402
+from tutor.modules.agent.tutor_orchestrator import run_tutor_turn  # noqa: E402
 
 
 def _empty_memory_dict() -> dict:
     return {"summary": "", "last_interaction": None}
 
+
+def _empty_teaching_session_dict() -> dict:
+    return TeachingSession.empty().to_dict()
+
 COLS_PER_SLIDE_ROW = 4
 
-ANSWER_MODE_TO_API = {"Basic": "basic", "RAG": "rag", "Agent": "agent"}
+ANSWER_MODE_TO_API = {"Basic": "basic", "RAG": "rag", "Agent": "agent", "Tutor": "tutor"}
+STATEFUL_MODES = {"Agent", "Tutor"}
 
 
 def render_slide_gallery(slides: list | None) -> None:
@@ -47,6 +54,26 @@ def render_slide_gallery(slides: list | None) -> None:
         for col, slide in zip(cols, chunk, strict=True):
             with col:
                 st.image(slide["image"], caption=slide["caption"], width="stretch")
+
+
+def render_debug_panel(debug_data: dict | None) -> None:
+    if not debug_data:
+        return
+    with st.expander("Debug trace", expanded=False):
+        tab_overview, tab_anchor, tab_answer, tab_pedagogic = st.tabs(
+            ["Overview", "Teaching Anchor", "Answer Agent", "Pedagogic Agent"]
+        )
+        with tab_overview:
+            col1, col2 = st.columns(2)
+            col1.metric("Session status", str(debug_data.get("session_status", "n/a")))
+            col2.metric("Hints used", int(debug_data.get("hints_used", 0)))
+            st.caption("Per-turn internal diagnostics for tutor development.")
+        with tab_anchor:
+            st.json(debug_data.get("teaching_anchor_snapshot"), expanded=False)
+        with tab_answer:
+            st.json(debug_data.get("answer_agent_trace"), expanded=False)
+        with tab_pedagogic:
+            st.json(debug_data.get("pedagogic_agent_trace"), expanded=False)
 
 
 MODEL_OPTIONS = {
@@ -80,16 +107,22 @@ with st.sidebar:
     model_path = MODEL_OPTIONS[selected_model]
     answer_mode = st.selectbox(
         "Answer mode",
-        ["Basic", "RAG", "Agent"],
+        ["Basic", "RAG", "Agent", "Tutor"],
         index=0,
-        help="Basic: your message is sent to the model as-is. RAG: lecture context is retrieved and prepended first. Agent: use a ReAct agent to answer the question.",
+        help="Basic: your message is sent to the model as-is. RAG: lecture context is retrieved and prepended first. Agent: use a ReAct agent to answer the question. Tutor: Socratic dual-agent that guides you toward the answer instead of revealing it.",
     )
     if USE_INFERENCE_API:
         st.caption(f"Remote inference: `{INFERENCE_API_BASE_URL}`")
+    debug_mode = st.toggle(
+        "Debug mode",
+        value=False,
+        help="Show internal tutor traces (teaching anchor + both agent reasonings).",
+    )
 
     if st.button("Clear Chat"):
         st.session_state.messages = []
         st.session_state.conversation_memory = _empty_memory_dict()
+        st.session_state.teaching_session = _empty_teaching_session_dict()
         st.rerun()
 
 # Session state
@@ -97,6 +130,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "conversation_memory" not in st.session_state:
     st.session_state.conversation_memory = _empty_memory_dict()
+if "teaching_session" not in st.session_state:
+    st.session_state.teaching_session = _empty_teaching_session_dict()
 
 # Render chat history
 for msg in st.session_state.messages:
@@ -104,6 +139,8 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
         if msg["role"] == "assistant":
             render_slide_gallery(msg.get("slides"))
+            if bool(debug_mode) and msg.get("debug_data") is not None:
+                render_debug_panel(msg.get("debug_data"))
 
 # Chat input
 if prompt := st.chat_input("Type your message..."):
@@ -118,7 +155,10 @@ if prompt := st.chat_input("Type your message..."):
         with st.chat_message("assistant"):
             outcome = StreamingOutcome()
             memory_to_send = (
-                st.session_state.conversation_memory if answer_mode == "Agent" else None
+                st.session_state.conversation_memory if answer_mode in STATEFUL_MODES else None
+            )
+            teaching_session_to_send = (
+                st.session_state.teaching_session if answer_mode == "Tutor" else None
             )
 
             def api_token_gen():
@@ -129,6 +169,8 @@ if prompt := st.chat_input("Type your message..."):
                     prompt,
                     outcome,
                     memory=memory_to_send,
+                    teaching_session=teaching_session_to_send,
+                    debug=bool(debug_mode and answer_mode == "Tutor"),
                 )
 
             try:
@@ -161,14 +203,20 @@ if prompt := st.chat_input("Type your message..."):
                 if outcome.text:
                     response_text = outcome.text
                 slides = outcome.slides
-                if answer_mode in ("RAG", "Agent") and slides:
+                if answer_mode in ("RAG", "Agent", "Tutor") and slides:
                     render_slide_gallery(slides)
-                if answer_mode == "Agent" and outcome.memory is not None:
+                if answer_mode in STATEFUL_MODES and outcome.memory is not None:
                     st.session_state.conversation_memory = outcome.memory
+                if answer_mode == "Tutor" and outcome.teaching_session is not None:
+                    st.session_state.teaching_session = outcome.teaching_session
+                if bool(debug_mode) and answer_mode == "Tutor" and outcome.debug_data is not None:
+                    render_debug_panel(outcome.debug_data)
         if response_text is not None:
             assistant_entry: dict = {"role": "assistant", "content": response_text}
-            if answer_mode in ("RAG", "Agent"):
+            if answer_mode in ("RAG", "Agent", "Tutor"):
                 assistant_entry["slides"] = slides or []
+            if answer_mode == "Tutor":
+                assistant_entry["debug_data"] = outcome.debug_data
             st.session_state.messages.append(assistant_entry)
     else:
         model, model_type = load_model(model_path)
@@ -234,6 +282,45 @@ if prompt := st.chat_input("Type your message..."):
                                 ),
                             )
                         st.session_state.conversation_memory = new_mem.to_dict()
+                elif answer_mode == "Tutor":
+                    with st.spinner("Initializing Socratic tutor..."):
+                        rag = load_rag()
+                        current_mem = ConversationMemory.from_dict(
+                            st.session_state.conversation_memory
+                        )
+                        current_session = TeachingSession.from_dict(
+                            st.session_state.teaching_session
+                        )
+                    with st.status("Thinking and Retrieving...", expanded=False) as status:
+                        def report(msg: str) -> None:
+                            status.update(label=msg, state="running")
+                            status.write(msg)
+
+                        st_callback = StreamlitAgentCallbackHandler(status)
+                        full_answer, slides, new_mem, new_session, debug_data = run_tutor_turn(
+                            model,
+                            rag,
+                            cfg,
+                            prompt,
+                            memory=current_mem,
+                            session=current_session,
+                            callbacks=[st_callback],
+                            debug=bool(debug_mode),
+                        )
+                        status.update(label="Tutoring move ready", state="complete", expanded=False)
+
+                    stream_cfg = load_config(DEFAULT_CONFIG_PATH)
+                    delay, chunk = get_agent_mock_stream_config(stream_cfg)
+                    response = st.write_stream(
+                        mock_stream_text(full_answer, delay, chunk)
+                    )
+                    if slides:
+                        render_slide_gallery(slides)
+                    if bool(debug_mode) and debug_data is not None:
+                        render_debug_panel(debug_data)
+
+                    st.session_state.conversation_memory = new_mem.to_dict()
+                    st.session_state.teaching_session = new_session.to_dict()
                 else:
                     model_prompt = prompt
                     slides = None
@@ -246,6 +333,10 @@ if prompt := st.chat_input("Type your message..."):
                 slides = None
 
         assistant_entry = {"role": "assistant", "content": response}
-        if answer_mode == "RAG" or answer_mode == "Agent":
+        if answer_mode in ("RAG", "Agent", "Tutor"):
             assistant_entry["slides"] = slides
+        if answer_mode == "Tutor":
+            assistant_entry["debug_data"] = (
+                debug_data if "debug_data" in locals() else None
+            )
         st.session_state.messages.append(assistant_entry)
