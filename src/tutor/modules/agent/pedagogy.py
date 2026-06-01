@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
@@ -7,6 +8,12 @@ from tutor.utils.misc import parse_json_response
 
 
 TeachingStatus = Literal["exploring", "narrowing", "close", "resolved"]
+
+TOPIC_SHIFT_PREFIX = "[TOPIC_SHIFT:"
+ADVANCE_SCAFFOLD_SIGNAL = "[ADVANCE_SCAFFOLD]"
+
+_TOPIC_SHIFT_RE = re.compile(r"\[TOPIC_SHIFT:\s*(.*?)\]", re.IGNORECASE | re.DOTALL)
+_ADVANCE_SCAFFOLD_RE = re.compile(r"\[ADVANCE_SCAFFOLD\]", re.IGNORECASE)
 
 
 @dataclass
@@ -59,7 +66,7 @@ class TeachingAnchor:
     def merge_with(self, other: "TeachingAnchor") -> "TeachingAnchor":
         """Fold a freshly-built anchor on top of the current one.
 
-        Used when the Pedagogic Agent calls ``Query_Expert_Agent`` mid-turn:
+        Used when the orchestrator rebuilds the anchor via the Answer Agent:
         we want to keep existing scaffolding but enrich facts and citations.
         """
         if other.is_empty():
@@ -93,6 +100,7 @@ class TeachingSession:
     anchor: Optional[TeachingAnchor] = None
     status: TeachingStatus = "exploring"
     hints_used: int = 0
+    current_scaffold_index: int = 0
 
     @classmethod
     def empty(cls) -> "TeachingSession":
@@ -114,13 +122,24 @@ class TeachingSession:
             hints_used = int(hints_used)
         except (TypeError, ValueError):
             hints_used = 0
-        return cls(anchor=anchor, status=status, hints_used=hints_used)
+        scaffold_index = data.get("current_scaffold_index", 0)
+        try:
+            scaffold_index = max(0, int(scaffold_index))
+        except (TypeError, ValueError):
+            scaffold_index = 0
+        return cls(
+            anchor=anchor,
+            status=status,
+            hints_used=hints_used,
+            current_scaffold_index=scaffold_index,
+        )
 
     def to_dict(self) -> dict:
         return {
             "anchor": self.anchor.to_dict() if self.anchor is not None else None,
             "status": self.status,
             "hints_used": int(self.hints_used),
+            "current_scaffold_index": int(self.current_scaffold_index),
         }
 
     def has_anchor(self) -> bool:
@@ -157,8 +176,8 @@ def format_anchor_for_pedagogic_prompt(anchor: Optional[TeachingAnchor]) -> str:
     if anchor is None or anchor.is_empty():
         return (
             "\n[TUTOR-ONLY ANCHOR]\n"
-            "No teaching anchor available yet. Use Query_Expert_Agent to build one "
-            "before giving any factual hint.\n[/TUTOR-ONLY ANCHOR]\n"
+            "No teaching anchor available yet. Ask one focused opening question "
+            "and avoid giving any factual hint.\n[/TUTOR-ONLY ANCHOR]\n"
         )
 
     lines: list[str] = ["", "[TUTOR-ONLY ANCHOR — DO NOT REVEAL OR QUOTE VERBATIM]"]
@@ -218,24 +237,42 @@ def parse_anchor_from_json(raw: str, original_question: str = "") -> TeachingAnc
     return TeachingAnchor.from_dict(data)
 
 
-def anchor_summary_for_tool_observation(anchor: TeachingAnchor) -> str:
-    """Concise textual view of an anchor for the Pedagogic Agent's Observation.
+def active_scaffold_question(
+    anchor: Optional[TeachingAnchor], index: int
+) -> Optional[str]:
+    """Return the scaffold question the tutor should focus on this turn.
 
-    Returned by the ``Query_Expert_Agent`` tool. Intentionally compact so the
-    ReAct scratchpad stays small.
+    Clamps the index to the available range so an over-advanced session still
+    points at the last (most specific) scaffold question.
     """
-    if anchor.is_empty():
-        return "Expert agent returned no usable information."
-    parts: list[str] = []
-    if anchor.target_explanation:
-        explanation = anchor.target_explanation.strip()
-        if len(explanation) > 600:
-            explanation = explanation[:600].rstrip() + " ..."
-        parts.append(f"Target explanation: {explanation}")
-    if anchor.key_facts:
-        parts.append("Key facts: " + " | ".join(anchor.key_facts))
-    if anchor.misconceptions:
-        parts.append("Misconceptions: " + " | ".join(anchor.misconceptions))
-    if anchor.citations:
-        parts.append("Citations: " + " | ".join(anchor.citations))
-    return "\n".join(parts)
+    if anchor is None or not anchor.scaffold_questions:
+        return None
+    safe_index = min(max(0, int(index)), len(anchor.scaffold_questions) - 1)
+    return anchor.scaffold_questions[safe_index]
+
+
+def extract_pedagogic_signals(text: str) -> tuple[str, Optional[str], bool]:
+    """Strip control signals from a Pedagogic Agent reply.
+
+    Returns ``(clean_text, topic_shift_query_or_None, advance_flag)``. The
+    signals are tutor-internal and must never reach the student, so the orchestrator
+    calls this before displaying or summarizing the move.
+    """
+    if not text:
+        return "", None, False
+
+    topic_shift_query: Optional[str] = None
+    shift_match = _TOPIC_SHIFT_RE.search(text)
+    if shift_match is not None:
+        candidate = shift_match.group(1).strip()
+        topic_shift_query = candidate or None
+
+    advance_flag = bool(_ADVANCE_SCAFFOLD_RE.search(text))
+
+    clean = _TOPIC_SHIFT_RE.sub("", text)
+    clean = _ADVANCE_SCAFFOLD_RE.sub("", clean)
+    clean = clean.strip()
+
+    return clean, topic_shift_query, advance_flag
+
+

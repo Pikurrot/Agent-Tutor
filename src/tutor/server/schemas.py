@@ -34,6 +34,7 @@ class TeachingSessionIO(BaseModel):
     anchor: Optional[TeachingAnchorIO] = None
     status: Literal["exploring", "narrowing", "close", "resolved"] = "exploring"
     hints_used: int = 0
+    current_scaffold_index: int = 0
 
 
 class AgentTraceStepIO(BaseModel):
@@ -62,6 +63,7 @@ class TutorDebugIO(BaseModel):
     pedagogic_agent_trace: Optional[AgentTraceIO] = None
     session_status: str = "exploring"
     hints_used: int = 0
+    current_scaffold_index: int = 0
 
 
 class CompleteRequest(BaseModel):

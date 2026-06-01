@@ -76,7 +76,7 @@ def build_answer_agent(
     """Construct the Answer Agent executor.
 
     If ``slide_manager`` is provided we reuse it so retrieved slides collected
-    inside the Pedagogic turn (via Query_Expert_Agent) bubble up to the UI.
+    when the orchestrator rebuilds the anchor bubble up to the UI.
     """
     agent_cfg = config.get("agent_config", {}) or {}
     pedagogic_cfg = config.get("pedagogic_config", {}) or {}
