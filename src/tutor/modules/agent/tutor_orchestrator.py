@@ -47,6 +47,9 @@ def run_tutor_turn(
 
     slide_manager = SlideRetrieverTool(rag_module)
 
+    if sess.anchor is not None and not sess.anchor.is_valid():
+        sess.anchor = None
+
     if not sess.has_anchor():
         anchor, _, answer_trace = run_answer_agent(
             qwen_model,

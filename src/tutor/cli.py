@@ -39,7 +39,10 @@ def build_parser():
     p_serve = sub.add_parser("serve", help="Run inference HTTP API (model + RAG in this process)")
     add_serve_args(p_serve)
 
-    p_eval = sub.add_parser("eval", help="Run agent evaluation on a Q&A dataset")
+    p_eval = sub.add_parser(
+        "eval",
+        help="Run evaluation on a Q&A dataset (agent, llm_context, or llm_baseline)",
+    )
     add_eval_args(p_eval)
 
     return p

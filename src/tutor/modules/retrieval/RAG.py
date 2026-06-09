@@ -45,6 +45,10 @@ class RAGModule:
             )
         return slides
 
+    def get_all_lecture_chunks(self) -> list[dict]:
+        """Return all slide transcript chunks across lectures (text only)."""
+        return self.retriever.load_all_slide_transcripts()
+
     def retrieve_and_augment(
         self,
         query: Optional[str] = None,

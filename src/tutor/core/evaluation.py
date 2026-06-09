@@ -6,10 +6,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from google import genai
 
+from tutor.core.eval_backends import EvalMode, build_eval_run_context, generate_prediction
 from tutor.modules.agent.agent import EvalAgentTraceCallback, build_rag_agent
 from tutor.modules.models.gemini import gemini_generate_answer
 from tutor.server.inference import _cached_model, get_rag_module
@@ -17,21 +18,35 @@ from tutor.utils.config import load_config
 from tutor.utils.misc import parse_json_response
 from tutor.utils.paths import DEFAULT_CONFIG_PATH, PROJECT_ROOT
 
+MatchMetric = Literal["Substantial Match", "Partial Match", "Mismatch"]
+
+MATCH_METRICS: frozenset[str] = frozenset(
+    {"Substantial Match", "Partial Match", "Mismatch"}
+)
+
 DEFAULT_JUDGE_SYSTEM_INSTRUCTION = """\
 You are an impartial grader for a university course tutoring agent.
 
-Your task: decide whether the GENERATED answer satisfactorily answers the QUESTION
-in the same sense as the REFERENCE answer (ground truth).
+Your task: compare the GENERATED answer (from the agent) against the REFERENCE answer
+(ground truth) for the same QUESTION, and assign exactly one rubric category.
 
-Grading criteria:
-- The generated answer should be semantically equivalent to the reference or cover the same key facts.
-- Paraphrasing and additional helpful detail are acceptable.
-- Mark as not acceptable if the generated answer contains factual errors, omits critical points
-  from the reference, or answers a different question.
+Rubric (use these exact labels):
+- Substantial Match: The predicted answer captures the core meaning of the ground truth.
+  Minor phrasing differences are acceptable.
+- Partial Match: The predicted answer includes some correct elements but misses key context
+  or includes minor inaccuracies.
+- Mismatch: The predicted answer is entirely wrong, irrelevant, or contains severe
+  hallucinations.
 
-Respond with strict JSON only (no markdown fences), using exactly these keys:
-- "acceptable": boolean (true if the generated answer is acceptable, false otherwise)
-- "reasoning": string (2-5 sentences explaining your judgment, comparing generated vs reference)
+Guidance:
+- Write your reasoning first (2-5 sentences), comparing generated vs reference before
+  choosing the category.
+- Empty, missing, or non-answers (e.g. "Agent stopped due to iteration limit") are Mismatch.
+- Extra helpful detail is fine if the core meaning still matches.
+
+Respond with strict JSON only (no markdown fences), using exactly these keys in this order:
+- "reasoning": string (your comparison and justification for the category)
+- "metric": string, exactly one of: "Substantial Match", "Partial Match", "Mismatch"
 """
 
 
@@ -48,13 +63,15 @@ class EvalResult:
     question: str
     ground_truth: str
     generated: str
-    acceptable: Optional[bool]
+    metric: Optional[MatchMetric]
     reasoning: Optional[str]
     error: Optional[str]
     duration_s: float
     slides_count: int
     chain_length: int
     agent_steps: list[dict[str, Any]] = field(default_factory=list)
+    eval_mode: str = "agent"
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 def _resolve_path(path: Path) -> Path:
@@ -129,12 +146,32 @@ def load_results_by_id(results_path: Path) -> dict[str, dict[str, Any]]:
 
 
 def is_judged(row: dict[str, Any]) -> bool:
-    return isinstance(row.get("acceptable"), bool)
+    """True when the row has a valid rubric metric (new format)."""
+    return row.get("metric") in MATCH_METRICS
 
 
 def needs_judge_only(row: dict[str, Any]) -> bool:
+    """Re-judge when agent output exists but metric is missing or legacy."""
     generated = row.get("generated")
-    return bool(generated) and row.get("acceptable") is None
+    if not generated:
+        return False
+    if is_judged(row) and "acceptable" not in row:
+        return False
+    return True
+
+
+def _apply_judge_fields(
+    row: dict[str, Any],
+    metric: Optional[str],
+    reasoning: Optional[str],
+    error: Optional[str],
+) -> dict[str, Any]:
+    """Write rubric fields and drop legacy boolean acceptable."""
+    row.pop("acceptable", None)
+    row["metric"] = metric
+    row["reasoning"] = reasoning
+    row["error"] = error
+    return row
 
 
 def save_all_results(results_path: Path, rows: list[dict[str, Any]]) -> None:
@@ -159,32 +196,56 @@ def persist_results(
     save_all_results(results_path, ordered_results_rows(all_items, by_id))
 
 
+def resolve_mode_paths(eval_cfg: dict, mode: EvalMode) -> tuple[dict, Path, Path]:
+    """Return (mode_cfg, results_path, summary_path) for the given eval mode."""
+    modes_cfg = eval_cfg.get("modes") or {}
+    if mode not in modes_cfg:
+        raise ValueError(
+            f"eval config missing modes.{mode}; "
+            f"available: {', '.join(sorted(modes_cfg)) or '(none)'}"
+        )
+    mode_cfg = modes_cfg[mode]
+    output_dir = _resolve_path(Path(eval_cfg.get("output_dir", "eval_runs")))
+    results_file = mode_cfg.get("results_file", f"{mode}_results.jsonl")
+    summary_file = mode_cfg.get("summary_file", f"summary_{mode}.json")
+    return mode_cfg, output_dir / results_file, output_dir / summary_file
+
+
 def _result_to_row(result: EvalResult) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "id": result.id,
         "question": result.question,
         "ground_truth": result.ground_truth,
         "generated": result.generated,
-        "acceptable": result.acceptable,
+        "metric": result.metric,
         "reasoning": result.reasoning,
         "error": result.error,
         "duration_s": round(result.duration_s, 3),
         "slides_count": result.slides_count,
         "chain_length": result.chain_length,
         "agent_steps": result.agent_steps,
+        "eval_mode": result.eval_mode,
     }
+    row.update(result.extra)
+    return row
 
 
 def compute_summary_stats(rows: list[dict[str, Any]], total_dataset_size: int) -> dict[str, Any]:
     completed_count = len(rows)
-    acceptable_count = sum(1 for r in rows if r.get("acceptable") is True)
-    failed_judge_count = sum(1 for r in rows if r.get("acceptable") is None)
-    accuracy = acceptable_count / completed_count if completed_count else 0.0
+    substantial_count = sum(1 for r in rows if r.get("metric") == "Substantial Match")
+    partial_count = sum(1 for r in rows if r.get("metric") == "Partial Match")
+    mismatch_count = sum(1 for r in rows if r.get("metric") == "Mismatch")
+    failed_judge_count = sum(1 for r in rows if not is_judged(r))
+    substantial_match_rate = (
+        substantial_count / completed_count if completed_count else 0.0
+    )
     return {
-        "accuracy": accuracy,
+        "substantial_match_rate": substantial_match_rate,
         "completed_count": completed_count,
         "total_dataset_size": total_dataset_size,
-        "acceptable_count": acceptable_count,
+        "substantial_match_count": substantial_count,
+        "partial_match_count": partial_count,
+        "mismatch_count": mismatch_count,
         "failed_judge_count": failed_judge_count,
     }
 
@@ -253,27 +314,73 @@ class RotatingJudgeClient:
         self.client = self._make_client()
 
 
+def rotating_gemini_generate(
+    judge_client: RotatingJudgeClient,
+    prompt: str,
+    *,
+    model: str,
+    temperature: float,
+    thinking_budget: int,
+    system_instruction: Optional[str] = None,
+) -> str:
+    """Call Gemini through a RotatingJudgeClient, rotating keys on any API error.
+
+    Shared by the rubric judge, the conversation judge, and the simulated
+    student so they all benefit from the same multi-key rotation/backoff.
+    Raises RuntimeError when every key is exhausted.
+    """
+    while True:
+        try:
+            return gemini_generate_answer(
+                judge_client.client,
+                prompt=prompt,
+                model=model,
+                thinking_budget=thinking_budget,
+                temperature=temperature,
+                system_instruction=system_instruction,
+            )
+        except Exception as exc:
+            judge_client.rotate(exc)
+
+
 def _build_judge_user_message(question: str, ground_truth: str, generated: str) -> str:
     return (
         f"Question: {question}\n\n"
         f"Reference answer (ground truth):\n{ground_truth}\n\n"
-        f"Generated answer (agent):\n{generated}"
+        f"Generated answer:\n{generated}"
     )
 
 
-def _parse_judge_response(text: str) -> tuple[Optional[bool], Optional[str], Optional[str]]:
+def _normalize_metric(value: Any) -> Optional[MatchMetric]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if stripped in MATCH_METRICS:
+        return stripped  # type: ignore[return-value]
+    # Tolerate minor casing / spacing drift from the judge
+    lowered = stripped.lower()
+    for label in MATCH_METRICS:
+        if label.lower() == lowered:
+            return label  # type: ignore[return-value]
+    return None
+
+
+def _parse_judge_response(text: str) -> tuple[Optional[MatchMetric], Optional[str], Optional[str]]:
     try:
         parsed = parse_json_response(text)
     except (json.JSONDecodeError, ValueError) as e:
         return None, None, f"Failed to parse judge JSON: {e}"
 
-    acceptable = parsed.get("acceptable")
     reasoning = parsed.get("reasoning")
-    if not isinstance(acceptable, bool):
-        return None, None, f"Judge response missing boolean 'acceptable': {parsed!r}"
+    metric = _normalize_metric(parsed.get("metric"))
     if not isinstance(reasoning, str):
         return None, None, f"Judge response missing string 'reasoning': {parsed!r}"
-    return acceptable, reasoning, None
+    if metric is None:
+        return None, None, (
+            f"Judge response missing valid 'metric' "
+            f"(expected one of {sorted(MATCH_METRICS)}): {parsed!r}"
+        )
+    return metric, reasoning, None
 
 
 def judge_answer(
@@ -286,21 +393,16 @@ def judge_answer(
     temperature: float,
     thinking_budget: int,
     system_instruction: str,
-) -> tuple[Optional[bool], Optional[str], Optional[str]]:
+) -> tuple[Optional[MatchMetric], Optional[str], Optional[str]]:
     def _call(prompt: str) -> str:
-        """Call Gemini, rotating to the next key on any API error."""
-        while True:
-            try:
-                return gemini_generate_answer(
-                    judge_client.client,
-                    prompt=prompt,
-                    model=model,
-                    thinking_budget=thinking_budget,
-                    temperature=temperature,
-                    system_instruction=system_instruction,
-                )
-            except Exception as exc:
-                judge_client.rotate(exc)
+        return rotating_gemini_generate(
+            judge_client,
+            prompt,
+            model=model,
+            temperature=temperature,
+            thinking_budget=thinking_budget,
+            system_instruction=system_instruction,
+        )
 
     user_message = _build_judge_user_message(question, ground_truth, generated)
     try:
@@ -308,14 +410,15 @@ def judge_answer(
     except Exception as e:
         return None, None, f"Judge API error: {e}"
 
-    acceptable, reasoning, error = _parse_judge_response(raw)
+    metric, reasoning, error = _parse_judge_response(raw)
     if error is None:
-        return acceptable, reasoning, None
+        return metric, reasoning, None
 
     retry_prompt = (
         user_message
         + "\n\nYour previous response was not valid JSON. "
-        "Respond with strict JSON only, no markdown, keys: acceptable (boolean), reasoning (string)."
+        "Respond with strict JSON only, no markdown, keys: "
+        'reasoning (string), metric (one of "Substantial Match", "Partial Match", "Mismatch").'
     )
     try:
         raw_retry = _call(retry_prompt)
@@ -327,6 +430,7 @@ def judge_answer(
 def run_evaluation(
     eval_cfg: dict,
     *,
+    mode: EvalMode = "agent",
     limit: Optional[int] = None,
     fresh: bool = False,
 ) -> Path:
@@ -334,8 +438,8 @@ def run_evaluation(
     if not dataset_path:
         raise ValueError("eval config must specify dataset_path")
 
-    output_dir = _resolve_path(Path(eval_cfg.get("output_dir", "eval_runs")))
-    results_file = eval_cfg.get("results_file", "results.jsonl")
+    _mode_cfg, results_path, summary_path = resolve_mode_paths(eval_cfg, mode)
+    output_dir = results_path.parent
     resume = bool(eval_cfg.get("resume", True)) and not fresh
     model_path = eval_cfg.get("model_path", "Qwen/Qwen3-8B")
     cfg_limit = eval_cfg.get("limit")
@@ -353,8 +457,6 @@ def run_evaluation(
         all_items = all_items[: int(effective_limit)]
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    results_path = output_dir / results_file
-    summary_path = output_dir / "summary.json"
 
     if fresh:
         if results_path.exists():
@@ -375,7 +477,7 @@ def run_evaluation(
     work_items: list[tuple[EvalItem, str]] = []
     for item in all_items:
         existing = by_id.get(item.id)
-        if existing is not None and is_judged(existing):
+        if existing is not None and is_judged(existing) and "acceptable" not in existing:
             continue
         if existing is not None and needs_judge_only(existing):
             work_items.append((item, "judge_only"))
@@ -388,19 +490,21 @@ def run_evaluation(
         print(f"All {len(all_items)} items already evaluated (resume).")
         if rows:
             print(
-                f"  Accuracy: {stats['acceptable_count']}/{stats['completed_count']} "
-                f"({stats['accuracy']:.1%})"
+                f"  Substantial Match: {stats['substantial_match_count']}/{stats['completed_count']} "
+                f"({stats['substantial_match_rate']:.1%})"
             )
         print(f"  Results: {results_path}")
         return output_dir
 
     if judged_count or judge_retry_count or agent_pending_count:
-        agent_work_count = sum(1 for _, m in work_items if m == "full")
+        predict_work_count = sum(1 for _, m in work_items if m == "full")
         print(
-            f"Resuming: {judged_count} judged, {judge_retry_count} to re-judge only, "
-            f"{agent_work_count} need agent"
+            f"Resuming ({mode}): {judged_count} judged, {judge_retry_count} to re-judge only, "
+            f"{predict_work_count} need prediction"
         )
 
+    print(f"Eval mode: {mode}")
+    run_ctx = build_eval_run_context(mode, eval_cfg)
     judge_client = RotatingJudgeClient()
     started_at = datetime.now(timezone.utc).isoformat()
     processed_in_run = 0
@@ -414,9 +518,9 @@ def run_evaluation(
         if mode == "judge_only":
             existing = by_id[item.id]
             generated = str(existing["generated"])
-            print("  -> re-judging (agent output preserved)")
+            print("  -> re-judging (prediction preserved)")
             t0 = time.perf_counter()
-            acceptable, reasoning, error = judge_answer(
+            metric, reasoning, error = judge_answer(
                 judge_client,
                 item.question,
                 item.answer,
@@ -427,26 +531,24 @@ def run_evaluation(
                 system_instruction=judge_system,
             )
             judge_duration = time.perf_counter() - t0
-            existing["acceptable"] = acceptable
-            existing["reasoning"] = reasoning
-            existing["error"] = error
-            by_id[item.id] = existing
+            by_id[item.id] = _apply_judge_fields(existing, metric, reasoning, error)
             chain_length = existing.get("chain_length", 0)
             agent_duration = existing.get("duration_s", 0)
         else:
-            t0 = time.perf_counter()
             try:
-                generated, agent_steps, chain_length, slides_count = run_agent_with_trace(
-                    model_path, item.question
-                )
+                pred = generate_prediction(run_ctx, item)
             except Exception as e:
-                print(f"  -> agent error (not saved, will retry on resume): {e}")
+                print(f"  -> prediction error (not saved, will retry on resume): {e}")
                 processed_in_run -= 1
                 continue
 
-            agent_duration = time.perf_counter() - t0
+            agent_duration = pred.duration_s
+            generated = pred.generated
+            agent_steps = pred.agent_steps
+            chain_length = pred.chain_length
+            slides_count = pred.slides_count
 
-            acceptable, reasoning, error = judge_answer(
+            metric, reasoning, error = judge_answer(
                 judge_client,
                 item.question,
                 item.answer,
@@ -463,13 +565,15 @@ def run_evaluation(
                     question=item.question,
                     ground_truth=item.answer,
                     generated=generated,
-                    acceptable=acceptable,
+                    metric=metric,
                     reasoning=reasoning,
                     error=error,
                     duration_s=agent_duration,
                     slides_count=slides_count,
                     chain_length=chain_length,
                     agent_steps=agent_steps,
+                    eval_mode=mode,
+                    extra=pred.extra,
                 )
             )
             judge_duration = 0.0
@@ -481,6 +585,7 @@ def run_evaluation(
         summary = {
             "started_at": started_at,
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "eval_mode": mode,
             "results_path": str(results_path),
             "dataset_path": str(dataset_path),
             "model_path": model_path,
@@ -493,8 +598,8 @@ def run_evaluation(
         }
         write_summary(summary_path, summary)
 
-        acceptable = by_id[item.id].get("acceptable")
-        status = "acceptable" if acceptable else ("not acceptable" if acceptable is False else "judge failed")
+        metric = by_id[item.id].get("metric")
+        status = metric if metric else "judge failed"
         if mode == "judge_only":
             print(f"  -> {status} (judge {judge_duration:.1f}s)")
         else:
@@ -504,8 +609,12 @@ def run_evaluation(
     stats = compute_summary_stats(rows, total_dataset_size)
     print()
     print(
-        f"Evaluation complete: {stats['acceptable_count']}/{stats['completed_count']} "
-        f"acceptable (accuracy {stats['accuracy']:.1%})"
+        f"Evaluation complete: {stats['substantial_match_count']}/{stats['completed_count']} "
+        f"Substantial Match ({stats['substantial_match_rate']:.1%})"
+    )
+    print(
+        f"  Partial Match: {stats['partial_match_count']}, "
+        f"Mismatch: {stats['mismatch_count']}"
     )
     if stats["failed_judge_count"]:
         print(f"  Judge failures: {stats['failed_judge_count']}")

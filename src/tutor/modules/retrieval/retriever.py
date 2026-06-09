@@ -65,6 +65,33 @@ class Retriever:
                 transcript.append(segment_data[2])
         return " ".join(transcript).replace("  ", " ").strip()
 
+    def load_document_transcripts_only(self, document_name: str) -> list[dict]:
+        """Load slide transcripts for one lecture without loading PDF images."""
+        transcription_file = self.processed_dir / "transcriptions" / f"{document_name}.json"
+        with open(transcription_file, encoding="utf-8") as f:
+            transcription_data = json.load(f)
+        chunks: list[dict] = []
+        for slide_index, slide_data in transcription_data.items():
+            slide_index = int(slide_index)
+            transcript = self._get_transcript(slide_data)
+            if not transcript:
+                continue
+            chunks.append(
+                {
+                    "document_name": document_name,
+                    "slide_index": slide_index,
+                    "transcript": transcript,
+                }
+            )
+        return chunks
+
+    def load_all_slide_transcripts(self) -> list[dict]:
+        """Load transcripts for every lecture (text only, no PDF conversion)."""
+        all_chunks: list[dict] = []
+        for document_name in self.documents_names:
+            all_chunks.extend(self.load_document_transcripts_only(document_name))
+        return all_chunks
+
     def load_document_data(
         self,
         document_name: str

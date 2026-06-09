@@ -1,6 +1,5 @@
 dataset_path: data/eval/deep_learning_questions.json
 output_dir: eval_runs
-results_file: deep_learning_results.jsonl
 resume: true
 model_path: Qwen/Qwen3-8B
 limit: null
@@ -9,17 +8,29 @@ judge:
   model: gemini-2.5-flash-lite
   temperature: 0.0
   thinking_budget: 0
-  system_instruction: |
-    You are an impartial grader for a university course tutoring agent.
+  # Omit system_instruction to use DEFAULT_JUDGE_SYSTEM_INSTRUCTION in evaluation.py
 
-    Your task: decide whether the GENERATED answer satisfactorily answers the QUESTION
-    in the same sense as the REFERENCE answer (ground truth).
-
-    Grading criteria:
-    - The generated answer should be semantically equivalent to the reference or cover the same key facts.
-    - Paraphrasing and additional helpful detail are acceptable.
-    - Mark as not acceptable if the generated answer contains factual errors, omits critical points from the reference, or answers a different question.
-
-    Respond with strict JSON only (no markdown fences), using exactly these keys:
-    - "acceptable": boolean (true if the generated answer is acceptable, false otherwise)
-    - "reasoning": string (2-5 sentences explaining your judgment, comparing generated vs reference)
+modes:
+  agent:
+    results_file: deep_learning_results.jsonl
+    summary_file: summary_agent.json
+  llm_context:
+    results_file: deep_learning_llm_context.jsonl
+    summary_file: summary_llm_context.json
+    max_input_tokens: 28000
+    max_new_tokens: 1024
+    prompt_reserve_tokens: 1500
+  llm_baseline:
+    results_file: deep_learning_llm_baseline.jsonl
+    summary_file: summary_llm_baseline.json
+    max_new_tokens: 1024
+  conversation:
+    results_file: deep_learning_conversation.jsonl
+    summary_file: summary_conversation.json
+    max_turns: 40           # safety cap (length otherwise unrestricted)
+    give_up_after: 6        # hint to student: consider surrendering after N unhelpful turns
+    k_values: [1, 3, 5, 10] # for Success@k / Telling@k
+    student:
+      model: gemini-2.5-flash
+      temperature: 0.7
+      thinking_budget: 0

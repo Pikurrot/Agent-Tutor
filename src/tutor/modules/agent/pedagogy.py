@@ -15,6 +15,20 @@ ADVANCE_SCAFFOLD_SIGNAL = "[ADVANCE_SCAFFOLD]"
 _TOPIC_SHIFT_RE = re.compile(r"\[TOPIC_SHIFT:\s*(.*?)\]", re.IGNORECASE | re.DOTALL)
 _ADVANCE_SCAFFOLD_RE = re.compile(r"\[ADVANCE_SCAFFOLD\]", re.IGNORECASE)
 
+ANCHOR_FAILURE_PATTERNS = (
+    "agent stopped due to iteration",
+    "iteration limit or time limit",
+    "time limit",
+)
+
+
+def is_anchor_failure_text(text: str) -> bool:
+    """True when text looks like a LangChain executor failure, not real content."""
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return True
+    return any(pattern in normalized for pattern in ANCHOR_FAILURE_PATTERNS)
+
 
 @dataclass
 class TeachingAnchor:
@@ -62,6 +76,14 @@ class TeachingAnchor:
             or self.scaffold_questions
             or self.citations
         )
+
+    def is_valid(self) -> bool:
+        """True when the anchor has usable tutoring content (not executor poison)."""
+        if self.is_empty():
+            return False
+        if is_anchor_failure_text(self.target_explanation):
+            return False
+        return bool(self.scaffold_questions or self.key_facts)
 
     def merge_with(self, other: "TeachingAnchor") -> "TeachingAnchor":
         """Fold a freshly-built anchor on top of the current one.
@@ -112,7 +134,7 @@ class TeachingSession:
             return cls.empty()
         anchor_data = data.get("anchor")
         anchor = TeachingAnchor.from_dict(anchor_data) if anchor_data else None
-        if anchor is not None and anchor.is_empty():
+        if anchor is not None and (anchor.is_empty() or not anchor.is_valid()):
             anchor = None
         status = data.get("status") or "exploring"
         if status not in ("exploring", "narrowing", "close", "resolved"):
@@ -143,7 +165,7 @@ class TeachingSession:
         }
 
     def has_anchor(self) -> bool:
-        return self.anchor is not None and not self.anchor.is_empty()
+        return self.anchor is not None and self.anchor.is_valid()
 
 
 def _coerce_str_list(value: Any) -> list[str]:
