@@ -81,3 +81,11 @@ class CompleteResponse(BaseModel):
     memory: Optional[ConversationMemoryIO] = None
     teaching_session: Optional[TeachingSessionIO] = None
     debug_data: Optional[TutorDebugIO] = None
+
+
+class WarmupRequest(BaseModel):
+    model_path: str
+
+
+class WarmupResponse(BaseModel):
+    status: str = "ready"

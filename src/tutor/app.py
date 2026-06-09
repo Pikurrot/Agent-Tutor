@@ -29,6 +29,7 @@ from tutor.modules.agent.agent import build_rag_agent, StreamlitAgentCallbackHan
 from tutor.modules.agent.pedagogy import TeachingSession  # noqa: E402
 from tutor.modules.agent.summarizer import ConversationMemory, roll_memory  # noqa: E402
 from tutor.modules.agent.tutor_orchestrator import run_tutor_turn  # noqa: E402
+from tutor.ui.common import render_slide_gallery  # noqa: E402
 
 
 def _empty_memory_dict() -> dict:
@@ -38,22 +39,8 @@ def _empty_memory_dict() -> dict:
 def _empty_teaching_session_dict() -> dict:
     return TeachingSession.empty().to_dict()
 
-COLS_PER_SLIDE_ROW = 4
-
 ANSWER_MODE_TO_API = {"Basic": "basic", "RAG": "rag", "Agent": "agent", "Tutor": "tutor"}
 STATEFUL_MODES = {"Agent", "Tutor"}
-
-
-def render_slide_gallery(slides: list | None) -> None:
-    if not slides:
-        return
-    st.caption("Sources · retrieved slides")
-    for row_start in range(0, len(slides), COLS_PER_SLIDE_ROW):
-        chunk = slides[row_start : row_start + COLS_PER_SLIDE_ROW]
-        cols = st.columns(len(chunk))
-        for col, slide in zip(cols, chunk, strict=True):
-            with col:
-                st.image(slide["image"], caption=slide["caption"], width="stretch")
 
 
 def render_debug_panel(debug_data: dict | None) -> None:

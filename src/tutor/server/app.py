@@ -5,8 +5,8 @@ import json
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
-from tutor.server.inference import iter_completion, run_completion
-from tutor.server.schemas import CompleteRequest, CompleteResponse, SlideOut
+from tutor.server.inference import get_rag_module, iter_completion, run_completion, _cached_model
+from tutor.server.schemas import CompleteRequest, CompleteResponse, SlideOut, WarmupRequest, WarmupResponse
 
 app = FastAPI(title="Agent Tutor Inference")
 
@@ -14,6 +14,16 @@ app = FastAPI(title="Agent Tutor Inference")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/v1/warmup", response_model=WarmupResponse)
+def warmup(body: WarmupRequest):
+    try:
+        _cached_model(body.model_path)
+        get_rag_module()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return WarmupResponse(status="ready")
 
 
 @app.post("/v1/complete", response_model=CompleteResponse)

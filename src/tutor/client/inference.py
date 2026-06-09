@@ -1,22 +1,31 @@
 from __future__ import annotations
 
-import base64
-import io
 import json
 from dataclasses import dataclass, field
 from typing import Generator, Optional
 
 import httpx
-from PIL import Image
 
 
 def _decode_slides_payload(slides_raw: list) -> list[dict]:
-    slides_out: list[dict] = []
-    for s in slides_raw:
-        raw = base64.b64decode(s["image_b64"])
-        img = Image.open(io.BytesIO(raw))
-        slides_out.append({"image": img, "caption": s["caption"]})
-    return slides_out
+    from tutor.ui.common import decode_slides_from_storage
+
+    return decode_slides_from_storage(slides_raw)
+
+
+def warmup(
+    base_url: str,
+    model_path: str,
+    *,
+    timeout: float = 600.0,
+) -> None:
+    """Preload model and RAG on the inference server."""
+    url = base_url.rstrip("/") + "/v1/warmup"
+    with httpx.Client(timeout=timeout) as client:
+        health = client.get(base_url.rstrip("/") + "/health")
+        health.raise_for_status()
+        response = client.post(url, json={"model_path": model_path})
+        response.raise_for_status()
 
 
 def complete(
