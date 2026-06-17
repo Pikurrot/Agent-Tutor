@@ -22,6 +22,7 @@ import httpx  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from tutor.client.inference import StreamingOutcome, iter_streaming_complete, warmup  # noqa: E402
+from tutor.core.public_auth import public_auth_configured, verify_public_login  # noqa: E402
 from tutor.core.streaming import get_agent_mock_stream_config, mock_stream_text  # noqa: E402
 from tutor.core.student_conversation_store import (  # noqa: E402
     StudentConversationStore,
@@ -184,6 +185,32 @@ def _run_tutor_via_api(prompt: str) -> tuple[str | None, list, dict, dict]:
     return response_text, outcome.slides or [], memory, session
 
 
+def _render_login_page() -> None:
+    st.title("Course Tutor")
+    st.caption("Sign in to continue.")
+
+    if not public_auth_configured():
+        st.error(
+            "Login is not configured. Set PUBLIC_APP_USERNAME and "
+            "PUBLIC_APP_PASSWORD in the server .env file."
+        )
+        return
+
+    _left, center, _right = st.columns([1, 1, 1])
+    with center:
+        with st.form("public_login", clear_on_submit=False):
+            username = st.text_input("Username", autocomplete="username")
+            password = st.text_input("Password", type="password", autocomplete="current-password")
+            submitted = st.form_submit_button("Log in", use_container_width=True)
+
+        if submitted:
+            if verify_public_login(username, password):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+
+
 def _run_tutor_local(prompt: str) -> tuple[str | None, list, dict, dict]:
     model, _ = load_model()
     rag = load_rag()
@@ -215,6 +242,13 @@ def _run_tutor_local(prompt: str) -> tuple[str | None, list, dict, dict]:
     return response, slides or [], new_mem.to_dict(), new_session.to_dict()
 
 
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    _render_login_page()
+    st.stop()
+
 warmup_resources()
 _init_session_state()
 _ensure_active_conversation()
@@ -223,6 +257,11 @@ store = get_conversation_store()
 summaries = store.list_summaries()
 
 with st.sidebar:
+    st.caption(f"Signed in as {os.environ.get('PUBLIC_APP_USERNAME', 'student')}")
+    if st.button("Log out", use_container_width=True):
+        st.session_state.authenticated = False
+        st.rerun()
+    st.divider()
     st.title("Conversations")
     if st.button("New conversation", use_container_width=True):
         record = store.create()
