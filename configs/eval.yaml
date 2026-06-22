@@ -24,6 +24,10 @@ modes:
     results_file: deep_learning_llm_baseline.jsonl
     summary_file: summary_llm_baseline.json
     max_new_tokens: 1024
+  rag:
+    results_file: deep_learning_rag.jsonl
+    summary_file: summary_rag.json
+    max_new_tokens: 1024
   conversation:
     results_file: deep_learning_conversation.jsonl
     summary_file: summary_conversation.json

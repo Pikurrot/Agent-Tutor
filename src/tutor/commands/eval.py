@@ -52,10 +52,11 @@ def add_eval_args(p: argparse.ArgumentParser):
     )
     p.add_argument(
         "--mode",
-        choices=["agent", "llm_context", "llm_baseline", "conversation"],
+        choices=["agent", "llm_context", "llm_baseline", "conversation", "rag"],
         default="agent",
         help=(
             "Evaluation backend: agent (ReAct+RAG, default), "
+            "rag (single retrieve-then-generate pass), "
             "llm_context (Qwen with all lecture transcripts), "
             "llm_baseline (Qwen question-only), "
             "conversation (Gemini student talks to the Socratic tutor)"

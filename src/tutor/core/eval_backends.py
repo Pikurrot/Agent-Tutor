@@ -6,16 +6,28 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 if TYPE_CHECKING:
     from tutor.core.evaluation import EvalItem
+from tutor.core.chat import generate_response
 from tutor.server.inference import _cached_model, get_rag_module
 from tutor.utils.config import load_config
 from tutor.utils.paths import DEFAULT_CONFIG_PATH
 
-EvalMode = Literal["agent", "llm_context", "llm_baseline", "conversation"]
+EvalMode = Literal["agent", "llm_context", "llm_baseline", "conversation", "rag"]
 
 DEFAULT_LLM_BASELINE_TEMPLATE = """\
 You are answering questions for a university deep learning course. You do not have access to lecture slides or transcripts. Answer as well as you can from general knowledge. If the question refers to lecture-specific wording or examples, make a reasonable guess and say when you are uncertain.
 
 Question: {question}"""
+
+DEFAULT_RAG_TEMPLATE = """\
+You are answering questions for a university deep learning course.
+Use only the lecture context below to answer the question.
+If the answer is not supported by the context, say so briefly.
+
+## Retrieved context
+{context}
+
+## Question
+{question}"""
 
 DEFAULT_LLM_CONTEXT_TEMPLATE = """\
 You are answering questions for a university deep learning course. Use only the lecture transcripts below. If the answer is not supported by the transcripts, say so briefly.
@@ -121,6 +133,31 @@ def _generate_with_model(model: Any, prompt: str, max_new_tokens: int) -> str:
     return str(model.generate(prompt, max_new_tokens=max_new_tokens)).strip()
 
 
+def predict_rag(model: Any, question: str, mode_cfg: dict) -> PredictionOutput:
+    rag = get_rag_module()
+    max_new_tokens = int(mode_cfg.get("max_new_tokens", 1024))
+    template = mode_cfg.get("prompt_template") or None
+    t0 = time.perf_counter()
+    augmented_prompt, slides_ui, _images = rag.retrieve_and_augment(query=question)
+    if template is not None:
+        context_block = "\n---\n".join(
+            format_lecture_chunk(d["document_name"], d["slide_index"], d["transcript"])
+            for d in rag.retriever.retrieve(question)[0]
+        )
+        prompt = template.format(context=context_block, question=question)
+    else:
+        prompt = augmented_prompt
+    generated = _generate_with_model(model, prompt, max_new_tokens)
+    retrieved_docs = sorted({s["caption"].split(" · ")[0] for s in slides_ui})
+    return PredictionOutput(
+        generated=generated,
+        duration_s=time.perf_counter() - t0,
+        slides_count=len(slides_ui),
+        chain_length=1,
+        extra={"retrieved_documents": retrieved_docs},
+    )
+
+
 def predict_agent(model_path: str, question: str) -> PredictionOutput:
     from tutor.core.evaluation import run_agent_with_trace
 
@@ -203,7 +240,7 @@ def build_eval_run_context(
     if mode == "llm_context":
         ctx.context_text, ctx.context_meta = build_llm_context_corpus(ctx.model, mode_cfg)
 
-    return ctx
+    return ctx  # rag and llm_baseline need no further setup
 
 
 def generate_prediction(
@@ -226,4 +263,8 @@ def generate_prediction(
             run_ctx.context_text,
             run_ctx.context_meta,
         )
+    if run_ctx.mode == "rag":
+        if run_ctx.model is None:
+            raise RuntimeError("LLM model not loaded for rag")
+        return predict_rag(run_ctx.model, item.question, run_ctx.mode_cfg)
     raise ValueError(f"Unknown eval mode: {run_ctx.mode!r}")

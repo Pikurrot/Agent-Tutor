@@ -19,6 +19,8 @@ from tutor.commands.serve import add_serve_args, run_serve  # noqa: E402
 from tutor.utils.misc import seed_everything # noqa: E402
 from tutor.commands.process import add_process_args, run_process # noqa: E402
 from tutor.commands.eval import add_eval_args, run_eval  # noqa: E402
+from tutor.commands.generate_qa import add_generate_qa_args, run_generate_qa  # noqa: E402
+from tutor.commands.eval_report import add_eval_report_args, run_eval_report  # noqa: E402
 
 
 dotenv.load_dotenv()
@@ -49,6 +51,18 @@ def build_parser():
     )
     add_eval_args(p_eval)
 
+    p_gqa = sub.add_parser(
+        "generate-qa",
+        help="Generate Q&A dataset from lecture transcripts using Gemini",
+    )
+    add_generate_qa_args(p_gqa)
+
+    p_report = sub.add_parser(
+        "eval-report",
+        help="Generate Markdown report from evaluation results",
+    )
+    add_eval_report_args(p_report)
+
     return p
 
 
@@ -75,6 +89,10 @@ def main():
         run_serve(args)
     elif args.command == "eval":
         run_eval(args)
+    elif args.command == "generate-qa":
+        run_generate_qa(args)
+    elif args.command == "eval-report":
+        run_eval_report(args)
     else:
         parser.print_help()
         sys.exit(1)
