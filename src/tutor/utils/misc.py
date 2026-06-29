@@ -8,6 +8,7 @@ from transformers import Qwen2_5_VLConfig
 from typing import Tuple, Any
 
 from tutor.modules.models.gemini import GeminiModel
+from tutor.modules.models.openai_model import OpenAIModel
 from tutor.modules.models.qwen import QwenVLModel, Qwen
 from tutor.modules.models.groq import GroqModel
 
@@ -58,6 +59,9 @@ def get_model(model_path: str, cache_dir: str, config: dict) -> Tuple[Any, str]:
 	if model_path.startswith("gemini"):
 		model_type = "gemini"
 		model = GeminiModel(config)
+	elif model_path.startswith("gpt-"):
+		model_type = "openai"
+		model = OpenAIModel(config)
 	elif model_path.startswith("groq"):
 		model_type = "groq"
 		model = GroqModel(config)

@@ -71,6 +71,26 @@ def _find_legacy_summary(output_dir: Path) -> dict[str, Any]:
     return _load_json(output_dir / "summary.json")
 
 
+def _load_context_dependent_map(dataset_path: str) -> dict[str, bool]:
+    """Return {question_id: context_dependent} from the questions JSON dataset."""
+    path = _resolve(Path(dataset_path))
+    if not path.exists():
+        return {}
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    result: dict[str, bool] = {}
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        if "context_dependent" not in entry:
+            continue
+        qid = str(entry.get("id", i))
+        result[qid] = bool(entry["context_dependent"])
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Metric helpers
 # ---------------------------------------------------------------------------
@@ -181,7 +201,15 @@ def section_accuracy_table(
 def section_context_breakdown(
     modes_data: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]],
     mode_order: list[str],
+    context_dep_map: Optional[dict[str, bool]] = None,
 ) -> str:
+    """Compare each method's accuracy on context_dependent=True vs False questions.
+
+    ``context_dep_map`` is a ``{question_id: bool}`` lookup built from the
+    questions dataset. When provided, rows that lack the field are enriched via
+    their ``id`` key before grouping, so the breakdown works even when result
+    JSONL files were written before the field existed.
+    """
     any_data = False
     table_rows: list[str] = []
 
@@ -189,7 +217,21 @@ def section_context_breakdown(
         if mode not in modes_data or mode == "conversation":
             continue
         _summary, rows = modes_data[mode]
-        annotated = [r for r in rows if "context_dependent" in r]
+
+        # Enrich rows with context_dependent from the map when absent in the row
+        if context_dep_map:
+            enriched: list[dict[str, Any]] = []
+            for r in rows:
+                if "context_dependent" in r:
+                    enriched.append(r)
+                else:
+                    row_id = str(r.get("id", ""))
+                    if row_id in context_dep_map:
+                        enriched.append({**r, "context_dependent": context_dep_map[row_id]})
+            annotated = enriched
+        else:
+            annotated = [r for r in rows if "context_dependent" in r]
+
         if not annotated:
             continue
         any_data = True
@@ -218,8 +260,8 @@ def section_context_breakdown(
     lines = [
         "## Context-dependent breakdown",
         "",
-        "Questions labelled **Yes** require specific lecture content to answer; "
-        "**No** can be answered from general knowledge.",
+        "Questions labelled **Yes** require specific lecture content to answer correctly; "
+        "**No** can be answered from general knowledge alone.",
         "",
         "| Method | Context-dep. | N | Substantial Match | Partial Match | Mismatch |",
         "| ------ | :-: | --: | :-: | :-: | :-: |",
@@ -400,6 +442,10 @@ def generate_report(
     # Collect all summaries for metadata section
     all_summaries = {m: s for m, (s, _) in modes_data.items()}
 
+    # Build context_dependent lookup from the questions dataset
+    dataset_path = eval_cfg.get("dataset_path", "")
+    context_dep_map = _load_context_dependent_map(dataset_path) if dataset_path else {}
+
     # Build sections
     accuracy_mode_order = [m for m in ACCURACY_MODES if m in mode_order]
     conv_summary, conv_rows = modes_data.get("conversation", ({}, []))
@@ -411,7 +457,7 @@ def generate_report(
         section_metadata(eval_cfg, all_summaries),
         section_coverage(modes_data, mode_order),
         section_accuracy_table(modes_data, accuracy_mode_order),
-        section_context_breakdown(modes_data, accuracy_mode_order),
+        section_context_breakdown(modes_data, accuracy_mode_order, context_dep_map),
         section_agent_traces(agent_rows),
         section_conversation(conv_summary, conv_rows),
     ]

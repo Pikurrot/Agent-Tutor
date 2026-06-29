@@ -64,7 +64,7 @@ def render_debug_panel(debug_data: dict | None) -> None:
 
 
 MODEL_OPTIONS = {
-    "Gemini 2.5 Flash": "gemini-2.5-flash",
+    "GPT-5.4 Mini": "gpt-5.4-mini",
     "Groq": "groq/openai/gpt-oss-120b",
     "Qwen3-8B": "Qwen/Qwen3-8B",
     "Qwen3-VL-8B": "Qwen/Qwen3-VL-8B-Instruct",

@@ -68,6 +68,7 @@ class SlideRetrieverTool:
     def __init__(self, rag_module: RAGModule):
         self.rag_module = rag_module
         self.retrieved_slides = []
+        self.retrieved_transcripts: list[str] = []
         self.on_progress_callback: Optional[Callable[[str], None]] = None
 
     def set_progress_callback(self, callback: Callable[[str], None]):
@@ -89,7 +90,9 @@ class SlideRetrieverTool:
                 else f"[document: \"{doc_name}\"]"
             )
             chunks.append(f"{header}\n{d['transcript']}")
-        return "\n---\n".join(chunks)
+        formatted = "\n---\n".join(chunks)
+        self.retrieved_transcripts.append(formatted)
+        return formatted
 
     def retrieve_full_context(
         self,

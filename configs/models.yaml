@@ -1,3 +1,7 @@
+openai_config:
+    model: gpt-5.4-mini
+    temperature: 0.1
+    system_instruction: null
 gemini_config:
     model: gemini-2.5-flash
     thinking_budget: 0

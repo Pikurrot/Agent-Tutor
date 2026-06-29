@@ -1,7 +1,8 @@
 agent_config:
   mock_stream_delay_seconds: 0.05
   mock_stream_chunk_chars: 5
-  max_iterations: 4
+  max_iterations: 7
+  max_new_tokens: 2048
   memory:
     enabled: true
     summary_max_new_tokens: 512

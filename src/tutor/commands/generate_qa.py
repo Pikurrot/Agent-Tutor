@@ -65,19 +65,19 @@ def add_generate_qa_args(p: argparse.ArgumentParser) -> None:
         type=int,
         default=20,
         metavar="M",
-        help="Number of samples per backfill Gemini call (default: 20)",
+        help="Number of samples per backfill batch (default: 20)",
     )
     p.add_argument(
-        "--gemini-model",
+        "--model",
         type=str,
-        default="gemini-2.5-flash",
-        help="Gemini model to use for generation and backfill (default: gemini-2.5-flash)",
+        default="gpt-5.4-mini",
+        help="OpenAI model to use for generation and backfill (default: gpt-5.4-mini)",
     )
     p.add_argument(
         "--temperature",
         type=float,
         default=0.5,
-        help="Gemini sampling temperature (default: 0.5)",
+        help="Sampling temperature (default: 0.5)",
     )
 
 
@@ -108,6 +108,6 @@ def run_generate_qa(args: argparse.Namespace) -> None:
         overwrite=args.overwrite,
         backfill_only=args.backfill_only,
         no_backfill=args.no_backfill,
-        gemini_model=args.gemini_model,
-        gemini_temperature=args.temperature,
+        model=args.model,
+        temperature=args.temperature,
     )

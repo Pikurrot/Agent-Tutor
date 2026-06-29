@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from google import genai
+from openai import OpenAI
 
 from tutor.core.eval_backends import EvalMode, build_eval_run_context, generate_prediction
 from tutor.modules.agent.agent import EvalAgentTraceCallback, build_rag_agent
-from tutor.modules.models.gemini import gemini_generate_answer
+from tutor.modules.models.openai_model import openai_generate_answer
 from tutor.server.inference import _cached_model, get_rag_module
 from tutor.utils.config import load_config
 from tutor.utils.misc import parse_json_response
@@ -256,6 +256,10 @@ def write_summary(summary_path: Path, summary: dict[str, Any]) -> None:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
 
+_ITERATION_LIMIT_SENTINEL = "Agent stopped due to iteration limit"
+_FALLBACK_MAX_NEW_TOKENS = 2048
+
+
 def run_agent_with_trace(
     model_path: str,
     prompt: str,
@@ -270,77 +274,58 @@ def run_agent_with_trace(
         config={"callbacks": [trace_callback]},
     )
     generated = response_dict["output"]
+
+    if _ITERATION_LIMIT_SENTINEL in generated:
+        print(f"  [fallback] iteration limit hit — generating from accumulated context")
+        if slide_manager.retrieved_transcripts:
+            context = "\n---\n".join(slide_manager.retrieved_transcripts)
+        else:
+            retrieved_data, _ = rag.retrieve(prompt)
+            context = slide_manager.prepare_retrieved_data(retrieved_data)
+        fallback_prompt = (
+            "You are answering a university deep learning course question.\n"
+            "Use only the lecture context below.\n\n"
+            f"## Context\n{context}\n\n"
+            f"## Question\n{prompt}"
+        )
+        generated = str(model.generate(fallback_prompt, max_new_tokens=_FALLBACK_MAX_NEW_TOKENS)).strip()
+
     agent_steps = trace_callback.steps
     chain_length = trace_callback.chain_length
     slides_count = len(slide_manager.retrieved_slides)
     return generated, agent_steps, chain_length, slides_count
 
 
-class RotatingJudgeClient:
-    """Wraps multiple Gemini API keys and rotates to the next one on errors."""
+class JudgeClient:
+    """Wraps a single OpenAI client for evaluation judging."""
 
     def __init__(self) -> None:
-        keys_raw = os.getenv("GEMINI_API_KEYS")
-        if not keys_raw:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
             raise EnvironmentError(
-                "GEMINI_API_KEYS environment variable is required for evaluation judging"
+                "OPENAI_API_KEY environment variable is required for evaluation judging"
             )
-        self.api_keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
-        if not self.api_keys:
-            raise EnvironmentError("GEMINI_API_KEYS is set but contains no valid keys")
-        self._idx = 0
-        self._errors = [0] * len(self.api_keys)
-        self.client = self._make_client()
-        print(f"Judge: loaded {len(self.api_keys)} API key(s)")
-
-    def _make_client(self) -> genai.Client:
-        return genai.Client(api_key=self.api_keys[self._idx])
-
-    def rotate(self, exc: Exception) -> None:
-        """Record the error on the current key and switch to the next one.
-
-        Raises if every key has accumulated 2+ errors (all exhausted).
-        """
-        self._errors[self._idx] += 1
-        print(
-            f"  Judge key[{self._idx}] error ({self._errors[self._idx]} total): {exc}. "
-            "Rotating to next key..."
-        )
-        if all(e >= 2 for e in self._errors):
-            raise RuntimeError(
-                f"All {len(self.api_keys)} Gemini judge API key(s) exhausted."
-            ) from exc
-        self._idx = (self._idx + 1) % len(self.api_keys)
-        self.client = self._make_client()
+        self.client = OpenAI(api_key=api_key)
+        print("Judge: OpenAI client initialized")
 
 
-def rotating_gemini_generate(
-    judge_client: RotatingJudgeClient,
+def judge_generate(
+    judge_client: JudgeClient,
     prompt: str,
     *,
     model: str,
     temperature: float,
-    thinking_budget: int,
+    thinking_budget: int = 0,
     system_instruction: Optional[str] = None,
 ) -> str:
-    """Call Gemini through a RotatingJudgeClient, rotating keys on any API error.
-
-    Shared by the rubric judge, the conversation judge, and the simulated
-    student so they all benefit from the same multi-key rotation/backoff.
-    Raises RuntimeError when every key is exhausted.
-    """
-    while True:
-        try:
-            return gemini_generate_answer(
-                judge_client.client,
-                prompt=prompt,
-                model=model,
-                thinking_budget=thinking_budget,
-                temperature=temperature,
-                system_instruction=system_instruction,
-            )
-        except Exception as exc:
-            judge_client.rotate(exc)
+    """Call OpenAI through a JudgeClient for rubric judging and conversation evaluation."""
+    return openai_generate_answer(
+        judge_client.client,
+        prompt=prompt,
+        model=model,
+        temperature=temperature,
+        system_instruction=system_instruction,
+    )
 
 
 def _build_judge_user_message(question: str, ground_truth: str, generated: str) -> str:
@@ -384,7 +369,7 @@ def _parse_judge_response(text: str) -> tuple[Optional[MatchMetric], Optional[st
 
 
 def judge_answer(
-    judge_client: RotatingJudgeClient,
+    judge_client: JudgeClient,
     question: str,
     ground_truth: str,
     generated: str,
@@ -395,7 +380,7 @@ def judge_answer(
     system_instruction: str,
 ) -> tuple[Optional[MatchMetric], Optional[str], Optional[str]]:
     def _call(prompt: str) -> str:
-        return rotating_gemini_generate(
+        return judge_generate(
             judge_client,
             prompt,
             model=model,
@@ -446,7 +431,7 @@ def run_evaluation(
     effective_limit = limit if limit is not None else cfg_limit
 
     judge_cfg = eval_cfg.get("judge", {}) or {}
-    judge_model = judge_cfg.get("model", "gemini-2.5-flash")
+    judge_model = judge_cfg.get("model", "gpt-5.4-mini")
     judge_temperature = float(judge_cfg.get("temperature", 0.0))
     judge_thinking_budget = int(judge_cfg.get("thinking_budget", 0))
     judge_system = judge_cfg.get("system_instruction") or DEFAULT_JUDGE_SYSTEM_INSTRUCTION
@@ -505,7 +490,7 @@ def run_evaluation(
 
     print(f"Eval mode: {mode}")
     run_ctx = build_eval_run_context(mode, eval_cfg)
-    judge_client = RotatingJudgeClient()
+    judge_client = JudgeClient()
     started_at = datetime.now(timezone.utc).isoformat()
     processed_in_run = 0
 

@@ -9,12 +9,12 @@ from typing import Any, Literal, Optional
 
 from tutor.core.evaluation import (
     EvalItem,
-    RotatingJudgeClient,
+    JudgeClient,
     load_dataset,
     load_results_by_id,
     ordered_results_rows,
     resolve_mode_paths,
-    rotating_gemini_generate,
+    judge_generate,
     save_all_results,
     write_summary,
 )
@@ -111,12 +111,12 @@ def _build_student_prompt(question: str, transcript: list[dict]) -> str:
 
 
 def generate_student_message(
-    judge_client: RotatingJudgeClient,
+    judge_client: JudgeClient,
     question: str,
     transcript: list[dict],
     student_cfg: dict,
 ) -> tuple[str, Optional[StudentSignal]]:
-    model = student_cfg.get("model", "gemini-2.5-flash")
+    model = student_cfg.get("model", "gpt-5.4-mini")
     temperature = float(student_cfg.get("temperature", 0.7))
     thinking_budget = int(student_cfg.get("thinking_budget", 0))
     give_up_after = int(student_cfg.get("give_up_after", 6))
@@ -128,7 +128,7 @@ def generate_student_message(
         )
     )
     prompt = _build_student_prompt(question, transcript)
-    raw = rotating_gemini_generate(
+    raw = judge_generate(
         judge_client,
         prompt,
         model=model,
@@ -193,7 +193,7 @@ def _parse_conversation_judge_response(
 
 
 def judge_conversation(
-    judge_client: RotatingJudgeClient,
+    judge_client: JudgeClient,
     item: EvalItem,
     transcript: list[dict],
     *,
@@ -210,7 +210,7 @@ def judge_conversation(
     )
 
     def _call(prompt: str) -> str:
-        return rotating_gemini_generate(
+        return judge_generate(
             judge_client,
             prompt,
             model=model,
@@ -272,7 +272,7 @@ def run_one_conversation(
     config: dict,
     conv_cfg: dict,
     item: EvalItem,
-    judge_client: RotatingJudgeClient,
+    judge_client: JudgeClient,
     row: dict[str, Any],
     persist: Any,
 ) -> dict[str, Any]:
@@ -525,14 +525,14 @@ def run_conversation_evaluation(
     k_values = [int(k) for k in (conv_cfg.get("k_values") or [1, 3, 5, 10])]
 
     judge_cfg = eval_cfg.get("judge", {}) or {}
-    judge_model = judge_cfg.get("model", "gemini-2.5-flash")
+    judge_model = judge_cfg.get("model", "gpt-5.4-mini")
     judge_temperature = float(judge_cfg.get("temperature", 0.0))
     judge_thinking_budget = int(judge_cfg.get("thinking_budget", 0))
     judge_system = (
         conv_cfg.get("judge_system_instruction")
         or DEFAULT_CONVERSATION_JUDGE_SYSTEM_INSTRUCTION
     )
-    student_model = (conv_cfg.get("student", {}) or {}).get("model", "gemini-2.5-flash")
+    student_model = (conv_cfg.get("student", {}) or {}).get("model", "gpt-5.4-mini")
 
     all_items = load_dataset(Path(dataset_path))
     total_dataset_size = len(all_items)
@@ -598,7 +598,7 @@ def run_conversation_evaluation(
     cfg = load_config(DEFAULT_CONFIG_PATH)
     qwen_model, _ = _cached_model(model_path)
     rag_module = get_rag_module()
-    judge_client = RotatingJudgeClient()
+    judge_client = JudgeClient()
 
     processed = 0
     for item, work in work_items:

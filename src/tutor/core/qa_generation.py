@@ -6,9 +6,9 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from google import genai
+from openai import OpenAI
 
-from tutor.modules.models.gemini import gemini_generate_answer
+from tutor.modules.models.openai_model import openai_generate_answer
 from tutor.utils.paths import PROJECT_ROOT
 
 # ---------------------------------------------------------------------------
@@ -17,18 +17,36 @@ from tutor.utils.paths import PROJECT_ROOT
 
 GENERATION_SYSTEM_INSTRUCTION = """\
 You are a question-and-answer generator for a university deep learning course.
-Given a full lecture transcript, generate student study questions — the kind of short,
-direct question a student might ask while reviewing lecture material.
-Some questions should rely on content only found in this specific lecture (figures,
-named examples, professor-specific wording, references to specific experiments),
-while others should be answerable from general deep-learning knowledge alone.
-Respond with strict JSON only (no markdown fences): a JSON array of objects with
-exactly these keys:
-- "question": string
-- "answer": string
-- "context_dependent": boolean (true if the question requires this specific lecture's
-  content to answer correctly; false if any deep-learning practitioner could answer
-  it from general knowledge)
+Given a full lecture transcript, generate student study questions that are GENUINELY
+CONTEXT-DEPENDENT — meaning the answer can ONLY be given correctly by someone who
+watched this specific lecture.
+
+A question is genuinely context-dependent when its answer requires at least one of:
+  • A specific figure, diagram, or visual described in the lecture (e.g. "the diagram
+    on slide 4 showed three curves labelled A, B, C")
+  • A specific numerical result, benchmark score, or measurement presented in the slides
+    (e.g. "the professor showed that with 220 inputs the output variance grows to 220")
+  • A professor-coined term or unusual framing that is NOT standard DL terminology
+    (e.g. "the professor called this process 'model babysitting'")
+  • A concrete named example, analogy, or story the professor walked through step-by-step
+    (e.g. "the fish-classification example using aspect ratio, width, and height as features")
+  • An observation from a live demo or code run shown during the lecture
+    (e.g. "in the MNIST demo the gradient magnitude at layer 3 was almost zero")
+
+A question is NOT context-dependent (even if it mentions "the professor" or "the lecture")
+when the answer is standard deep learning theory that any practitioner or textbook could
+provide. Do NOT generate such questions.
+
+Test yourself before writing each question: "Could a student who never attended this lecture
+but knows deep learning well answer this correctly?" If yes, discard it.
+The answer MUST embed the specific lecture content (the number, the term, the example, the
+figure description) — not just explain the general concept.
+
+Respond with strict JSON only (no markdown fences): a JSON array of objects with exactly:
+- "question": string — ask about a specific element from the transcript
+- "answer": string — must include the lecture-specific detail that makes it unanswerable
+  from general knowledge; do NOT just explain the general DL concept
+- "context_dependent": true — every generated question must be true; never generate false
 Do not include any text outside the JSON array.
 """
 
@@ -38,8 +56,14 @@ Lecture: {lecture_name}
 Transcript:
 {full_transcript}
 
-Generate {k} questions and answers for this lecture.
-Aim for a mix: roughly half context_dependent=true and half context_dependent=false.
+Generate {k} context-dependent questions from this transcript.
+
+Steps:
+1. Scan the transcript for: specific figures or diagrams, exact numbers or metrics,
+   professor-coined terms, named analogies or examples, live demo observations.
+2. For each item found, write a question that can ONLY be answered by someone who
+   saw this lecture, with an answer that includes the specific detail from the transcript.
+3. Do NOT write questions whose answers are general DL theory — those will be rejected.
 """
 
 BACKFILL_SYSTEM_INSTRUCTION = """\
@@ -66,49 +90,29 @@ Questions:
 
 
 # ---------------------------------------------------------------------------
-# Gemini client helpers
+# OpenAI client helper
 # ---------------------------------------------------------------------------
 
-class RotatingGeminiClient:
-    """Multi-key Gemini client with automatic rotation on quota/API errors."""
+class OpenAIQAClient:
+    """OpenAI client for Q&A dataset generation and backfill."""
 
     def __init__(self, model: str, temperature: float = 0.5) -> None:
-        keys_raw = os.getenv("GEMINI_API_KEYS")
-        if not keys_raw:
-            raise EnvironmentError("GEMINI_API_KEYS environment variable is required")
-        self.api_keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
-        if not self.api_keys:
-            raise EnvironmentError("GEMINI_API_KEYS is set but contains no valid keys")
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise EnvironmentError("OPENAI_API_KEY environment variable is required")
         self.model = model
         self.temperature = temperature
-        self._idx = 0
-        self._errors = [0] * len(self.api_keys)
-        self.client = genai.Client(api_key=self.api_keys[self._idx])
-        print(f"Gemini client: {len(self.api_keys)} API key(s), model={model}")
-
-    def _rotate(self, exc: Exception) -> None:
-        self._errors[self._idx] += 1
-        print(f"  Key[{self._idx}] error ({self._errors[self._idx]}): {exc}. Rotating...")
-        if all(e >= 2 for e in self._errors):
-            raise RuntimeError(
-                f"All {len(self.api_keys)} Gemini API key(s) exhausted."
-            ) from exc
-        self._idx = (self._idx + 1) % len(self.api_keys)
-        self.client = genai.Client(api_key=self.api_keys[self._idx])
+        self.client = OpenAI(api_key=api_key)
+        print(f"OpenAI QA client: model={model}")
 
     def generate(self, prompt: str, system_instruction: str) -> str:
-        while True:
-            try:
-                return gemini_generate_answer(
-                    self.client,
-                    prompt=prompt,
-                    model=self.model,
-                    thinking_budget=0,
-                    temperature=self.temperature,
-                    system_instruction=system_instruction,
-                )
-            except Exception as exc:
-                self._rotate(exc)
+        return openai_generate_answer(
+            self.client,
+            prompt=prompt,
+            model=self.model,
+            temperature=self.temperature,
+            system_instruction=system_instruction,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +196,7 @@ def _parse_json_list(raw: str) -> list[dict[str, Any]]:
 
 
 def generate_qa_for_lecture(
-    client: RotatingGeminiClient,
+    client: OpenAIQAClient,
     lecture_name: str,
     transcript: str,
     k: int,
@@ -240,7 +244,7 @@ def _build_backfill_questions_block(samples: list[dict[str, Any]]) -> str:
 
 
 def backfill_context_dependent(
-    client: RotatingGeminiClient,
+    client: OpenAIQAClient,
     samples_batch: list[dict[str, Any]],
 ) -> dict[str, bool]:
     questions_block = _build_backfill_questions_block(samples_batch)
@@ -273,8 +277,8 @@ def run_qa_generation(
     overwrite: bool = False,
     backfill_only: bool = False,
     no_backfill: bool = False,
-    gemini_model: str = "gemini-2.5-flash",
-    gemini_temperature: float = 0.5,
+    model: str = "gpt-5.4-mini",
+    temperature: float = 0.5,
 ) -> None:
     from tutor.modules.retrieval.retriever import Retriever
 
@@ -283,7 +287,7 @@ def run_qa_generation(
         print(f"Overwrite: removed existing {output_path}")
 
     samples = load_qa_dataset(output_path)
-    client = RotatingGeminiClient(model=gemini_model, temperature=gemini_temperature)
+    client = OpenAIQAClient(model=model, temperature=temperature)
 
     # ------------------------------------------------------------------
     # Phase 1: backfill context_dependent for samples that lack it

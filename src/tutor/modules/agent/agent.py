@@ -35,8 +35,6 @@ def build_rag_agent(
 
     tools = [
         slide_tool_manager.get_tool("Search_All_Course_Context"),
-        slide_tool_manager.get_tool("Search_Document_Context"),
-        slide_tool_manager.get_tool("Retrieve_Slide_Context"),
     ]
 
     memory_block = (
@@ -45,34 +43,35 @@ def build_rag_agent(
     if memory_block:
         memory_block = memory_block.replace("{", "{{").replace("}", "}}")
 
-    template = """Answer the following questions as best you can.
-Retrieval instructions:
-- When the question involves more than one concept, idea or term, separate the retrieval into multiple steps, making one search query after the other. For instance, if the question is about "semantic segmentation and convolutional networks", make the search query (Action Input) be "semantic segmentation", retrieve the context (Observation) and then make another search query for "convolutional networks".
-- When the retrieved context does not contain the information expected by the search query, rephrase the search query to be more specific, or use synonims. Be original.
-- When retrieving context, answer the question mainly based on the information and vocabulary provided in the context.
-""" + \
-"You have access to the following documents:\n" + \
-'\n'.join([f"- \"{doc_name}\"" for doc_name in rag_module.retriever.documents_names]) + \
-"""
-Always use one of the available tools.
-You have access to the following tools:
-
-{tools}""" + memory_block + """
-Use the following format:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Begin!
-
-Question: {input}
-Thought:{agent_scratchpad}"""
+    document_list = "\n".join(
+        [f'- "{doc_name}"' for doc_name in rag_module.retriever.documents_names]
+    )
+    template = (
+        "Answer the following questions as best you can using lecture slide context.\n\n"
+        "Retrieval instructions:\n"
+        "- Search for context relevant to the question before answering.\n"
+        "- If the retrieved context fully answers the question, go directly to Final Answer.\n"
+        "- If the question involves multiple distinct concepts, make a separate search for each one.\n"
+        "- If a search returns insufficient context, rephrase the query or use synonyms and try once more.\n"
+        "- Base your answer primarily on the retrieved context and its vocabulary.\n\n"
+        "Available lectures:\n"
+        + document_list
+        + "\n\nYou have access to the following tools:\n\n"
+        "{tools}"
+        + memory_block
+        + "\n\nUse the following format:\n\n"
+        "Question: the input question you must answer\n"
+        "Thought: you should always think about what to do\n"
+        "Action: the action to take, should be one of [{tool_names}]\n"
+        "Action Input: the input to the action (a plain search query string)\n"
+        "Observation: the result of the action\n"
+        "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
+        "Thought: I now know the final answer\n"
+        "Final Answer: the final answer to the original input question\n\n"
+        "Begin!\n\n"
+        "Question: {input}\n"
+        "Thought:{agent_scratchpad}"
+    )
 
     prompt = PromptTemplate.from_template(template)
     
@@ -109,22 +108,7 @@ def _normalize_action_input(tool_input: Any) -> Any:
 
 
 def _metadata_from_action(tool: str, tool_input: Any) -> tuple[Optional[str], Optional[int]]:
-    document: Optional[str] = None
-    slide_number: Optional[int] = None
-    normalized = _normalize_action_input(tool_input)
-
-    if tool == "Search_Document_Context" and isinstance(normalized, dict):
-        document = normalized.get("document_name")
-        if document is not None:
-            document = str(document)
-    elif tool == "Retrieve_Slide_Context" and isinstance(normalized, dict):
-        document = normalized.get("document_name")
-        if document is not None:
-            document = str(document)
-        raw_slide = normalized.get("slide_number")
-        if raw_slide is not None:
-            slide_number = int(raw_slide)
-    return document, slide_number
+    return None, None
 
 
 class EvalAgentTraceCallback(BaseCallbackHandler):
